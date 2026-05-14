@@ -3,8 +3,8 @@ FROM condaforge/miniforge3:latest
 # Set the working directory
 WORKDIR /app
 
-# Install cadquery-ocp using Conda and clean cache to keep image small
-RUN conda install -y -c conda-forge cadquery-ocp python=3.11 && \
+# Install ocp using Conda from cadquery channel
+RUN conda install -y -c conda-forge -c cadquery ocp python=3.11 && \
     conda clean -afy
 
 # Copy requirements and install pip dependencies
