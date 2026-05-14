@@ -21,6 +21,23 @@ from OCP.TopExp import TopExp_Explorer
 from OCP.TopoDS import TopoDS, TopoDS_Edge
 from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
 
+
+def _as_edge(shape) -> TopoDS_Edge:
+    """Downcast TopoDS_Shape → TopoDS_Edge across pythonocc-core and cadquery ocp."""
+    if hasattr(TopoDS, "Edge_s"):
+        return TopoDS.Edge_s(shape)
+    if hasattr(TopoDS, "Edge"):
+        try:
+            return TopoDS.Edge(shape)
+        except Exception:
+            pass
+    # OCP fallback: reconstruct via TShape handle copy
+    e = TopoDS_Edge()
+    e.TShape(shape.TShape())
+    e.Location(shape.Location())
+    e.Orientation(shape.Orientation())
+    return e
+
 DEFAULT_DPI = 300
 DEFAULT_LABEL_CM = 26.0
 EXPORT_SUPERSAMPLE = 2
@@ -84,7 +101,7 @@ def _extract_edges(
         return
     exp = TopExp_Explorer(compound, TopAbs_EDGE)
     while exp.More():
-        edge = TopoDS_Edge(exp.Current())
+        edge = _as_edge(exp.Current())
         try:
             curve = BRepAdaptor_Curve(edge)
             disc = GCPnts_TangentialDeflection()
@@ -198,7 +215,7 @@ def step_to_edges_json(path: str) -> list:
             exp.Next()
             continue
         try:
-            edge = TopoDS_Edge(curr)
+            edge = _as_edge(curr)
             curve = BRepAdaptor_Curve(edge)
             first = curve.FirstParameter()
             last = curve.LastParameter()
