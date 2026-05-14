@@ -4,7 +4,7 @@ FROM condaforge/miniforge3:latest
 WORKDIR /app
 
 # Install ocp using Conda from cadquery channel
-RUN conda install -y -c conda-forge pythonocc-core python=3.11 && \
+RUN conda install -y -c conda-forge -c cadquery ocp python=3.11 && \
     conda clean -afy
 
 # Copy requirements and install pip dependencies
