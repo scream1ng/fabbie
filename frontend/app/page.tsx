@@ -180,7 +180,7 @@ export default function Home() {
           const whiteMesh = new THREE.Mesh(
             geo,
             new THREE.MeshBasicMaterial({
-              color: 0xffffff,
+              color: 0xf0f0f0,
               side: THREE.FrontSide,
               depthWrite: false,
               polygonOffset: true,

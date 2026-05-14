@@ -1,8 +1,11 @@
 import io
+import logging
 import math
 import os
 import tempfile
 from typing import Callable, List, Tuple
+
+logger = logging.getLogger(__name__)
 
 from PIL import Image, ImageDraw
 from OCP.BRepAdaptor import BRepAdaptor_Curve
@@ -216,9 +219,10 @@ def step_to_edges_json(path: str) -> list:
                     pts.append([round(x, 3), round(y, 3), round(z, 3)])
             if len(pts) >= 2:
                 result.append(pts)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Edge skip: %s", e)
         exp.Next()
+    logger.info("step_to_edges_json: %d polylines extracted", len(result))
     return result
 
 
