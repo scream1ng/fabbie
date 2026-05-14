@@ -13,7 +13,7 @@ app = FastAPI(title="step-to-label API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=["*"],  # Recommend changing "*" to your production frontend URL later
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
