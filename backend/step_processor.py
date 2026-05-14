@@ -18,7 +18,7 @@ from OCP.STEPControl import STEPControl_Reader
 from OCP.StlAPI import StlAPI_Writer
 from OCP.TopAbs import TopAbs_EDGE
 from OCP.TopExp import TopExp_Explorer
-from OCP.TopoDS import TopoDS
+from OCP.TopoDS import TopoDS, TopoDS_Edge
 from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
 
 DEFAULT_DPI = 300
@@ -84,7 +84,7 @@ def _extract_edges(
         return
     exp = TopExp_Explorer(compound, TopAbs_EDGE)
     while exp.More():
-        edge = TopoDS.Edge_s(exp.Current())
+        edge = TopoDS_Edge(exp.Current())
         try:
             curve = BRepAdaptor_Curve(edge)
             disc = GCPnts_TangentialDeflection()
@@ -198,7 +198,7 @@ def step_to_edges_json(path: str) -> list:
             exp.Next()
             continue
         try:
-            edge = TopoDS.Edge_s(curr)
+            edge = TopoDS_Edge(curr)
             curve = BRepAdaptor_Curve(edge)
             first = curve.FirstParameter()
             last = curve.LastParameter()
