@@ -190,8 +190,12 @@ def step_to_edges_json(path: str) -> list:
     result = []
     exp = TopExp_Explorer(shape, TopAbs_EDGE)
     while exp.More():
-        edge = TopoDS.Edge_s(exp.Current())
+        curr = exp.Current()
+        if curr.IsNull():
+            exp.Next()
+            continue
         try:
+            edge = TopoDS.Edge_s(curr)
             curve = BRepAdaptor_Curve(edge)
             first = curve.FirstParameter()
             last = curve.LastParameter()
