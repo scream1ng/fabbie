@@ -68,6 +68,29 @@ def _bbox_add(shape, bbox: Bnd_Box) -> None:
         BRepBndLib.Add(shape, bbox)
 
 
+def _ortho_axes(nx: float, ny: float, nz: float):
+    """Return two unit vectors orthogonal to (nx, ny, nz)."""
+    if abs(nx) < 0.9:
+        ax, ay, az = 1.0, 0.0, 0.0
+    else:
+        ax, ay, az = 0.0, 1.0, 0.0
+    dot = ax * nx + ay * ny + az * nz
+    ux_r = ax - dot * nx
+    uy_r = ay - dot * ny
+    uz_r = az - dot * nz
+    mag = math.sqrt(ux_r**2 + uy_r**2 + uz_r**2) or 1.0
+    ux, uy, uz = ux_r / mag, uy_r / mag, uz_r / mag
+    vx = ny * uz - nz * uy
+    vy = nz * ux - nx * uz
+    vz = nx * uy - ny * ux
+    return (ux, uy, uz), (vx, vy, vz)
+
+
+def _bbox_project(corners, dx, dy, dz):
+    projs = [x * dx + y * dy + z * dz for x, y, z in corners]
+    return max(projs) - min(projs)
+
+
 def analyse_part(path: str) -> dict:
     shape = load_step(path)
 
@@ -75,46 +98,93 @@ def analyse_part(path: str) -> dict:
     bbox = Bnd_Box()
     _bbox_add(shape, bbox)
     xmin, ymin, zmin, xmax, ymax, zmax = bbox.Get()
-    dims = sorted([xmax - xmin, ymax - ymin, zmax - zmin])
-    thickness_mm = dims[0]
-    h_mm = dims[1]
-    w_mm = dims[2]
+    corners = [
+        (xmin, ymin, zmin), (xmax, ymin, zmin),
+        (xmin, ymax, zmin), (xmax, ymax, zmin),
+        (xmin, ymin, zmax), (xmax, ymin, zmax),
+        (xmin, ymax, zmax), (xmax, ymax, zmax),
+    ]
 
-    # ── Face analysis — bends + flat area (deduplicated) ─────
-    bend_count = 0
+    # ── Pass 1: flat faces → thickness direction + area ──────
+    largest_flat_area = 0.0
     flat_area_mm2 = 0.0
-    seen_faces: set[int] = set()
+    thickness_normal: tuple[float, float, float] | None = None
+    seen_p1: set[int] = set()
 
     exp = TopExp_Explorer(shape, TopAbs_FACE)
     while exp.More():
         curr = exp.Current()
         fid = id(curr.TShape())
-        if fid not in seen_faces:
-            seen_faces.add(fid)
+        if fid not in seen_p1:
+            seen_p1.add(fid)
             try:
                 face = _as_face(curr)
                 adaptor = BRepAdaptor_Surface(face)
-                surf_type = adaptor.GetType()
-                if surf_type == GeomAbs_Cylinder:
-                    bend_count += 1
-                elif surf_type == GeomAbs_Plane:
+                if adaptor.GetType() == GeomAbs_Plane:
                     props = GProp_GProps()
                     _surface_props(face, props)
                     area = abs(props.Mass())
                     if math.isfinite(area):
                         flat_area_mm2 += area
+                        if area > largest_flat_area:
+                            largest_flat_area = area
+                            d = adaptor.Plane().Axis().Direction()
+                            thickness_normal = (abs(d.X()), abs(d.Y()), abs(d.Z()))
             except Exception as exc:
-                logger.debug("Face skip: %s", exc)
+                logger.debug("Face pass1: %s", exc)
         exp.Next()
 
-    # ── Edge analysis — cut perimeter + holes (deduplicated) ─
+    # Thickness = extent along face normal; blank dims = perpendicular extent
+    if thickness_normal is not None:
+        nx, ny, nz = thickness_normal
+        thickness_mm = _bbox_project(corners, nx, ny, nz)
+        (ux, uy, uz), (vx, vy, vz) = _ortho_axes(nx, ny, nz)
+        fp_a = _bbox_project(corners, ux, uy, uz)
+        fp_b = _bbox_project(corners, vx, vy, vz)
+        blank_w = max(fp_a, fp_b)
+        blank_h = min(fp_a, fp_b)
+    else:
+        dims = sorted([xmax - xmin, ymax - ymin, zmax - zmin])
+        thickness_mm, blank_h, blank_w = dims[0], dims[1], dims[2]
+
+    # ── Pass 2: count bends (cylindrical faces with axis ⊥ thickness) ──
+    bend_count = 0
+    seen_p2: set[int] = set()
+
+    exp2 = TopExp_Explorer(shape, TopAbs_FACE)
+    while exp2.More():
+        curr = exp2.Current()
+        fid = id(curr.TShape())
+        if fid not in seen_p2:
+            seen_p2.add(fid)
+            try:
+                face = _as_face(curr)
+                adaptor = BRepAdaptor_Surface(face)
+                if adaptor.GetType() == GeomAbs_Cylinder:
+                    if thickness_normal is not None:
+                        ax = adaptor.Cylinder().Axis().Direction()
+                        dot = abs(
+                            ax.X() * thickness_normal[0]
+                            + ax.Y() * thickness_normal[1]
+                            + ax.Z() * thickness_normal[2]
+                        )
+                        # axis ⊥ to sheet normal → bend; axis ∥ → hole wall
+                        if dot < 0.5:
+                            bend_count += 1
+                    else:
+                        bend_count += 1
+            except Exception as exc:
+                logger.debug("Face pass2: %s", exc)
+        exp2.Next()
+
+    # ── Edge analysis: cut perimeter + hole count ─────────────
     cut_perimeter_mm = 0.0
     circle_count = 0
     seen_edges: set[int] = set()
 
-    exp2 = TopExp_Explorer(shape, TopAbs_EDGE)
-    while exp2.More():
-        curr = exp2.Current()
+    exp3 = TopExp_Explorer(shape, TopAbs_EDGE)
+    while exp3.More():
+        curr = exp3.Current()
         eid = id(curr.TShape())
         if eid not in seen_edges:
             seen_edges.add(eid)
@@ -131,16 +201,16 @@ def analyse_part(path: str) -> dict:
                         circle_count += 1
             except Exception as exc:
                 logger.debug("Edge skip: %s", exc)
-        exp2.Next()
+        exp3.Next()
 
-    # Each full circular edge loop = 1 hole; shared inner/outer edges → halve
     hole_count = max(0, circle_count // 2)
 
     return {
-        "bbox_mm": [round(w_mm, 1), round(h_mm, 1), round(thickness_mm, 1)],
+        "bbox_mm": [round(blank_w, 1), round(blank_h, 1), round(thickness_mm, 1)],
         "thickness_mm": round(thickness_mm, 1),
         "cut_perimeter_mm": round(cut_perimeter_mm, 1),
         "hole_count": hole_count,
         "bend_count": bend_count,
         "flat_area_mm2": round(flat_area_mm2, 1),
+        "flat_pattern_area_mm2": round(flat_area_mm2 / 2.0, 1),
     }

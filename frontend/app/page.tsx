@@ -33,13 +33,14 @@ export default function Home() {
   const [exportDpi, setExportDpi] = useState(300);
   const [analysis, setAnalysis] = useState<PartAnalysis | null>(null);
   const [costParams, setCostParams] = useState<CostParams>({
-    qty: 1,
     moq: 1,
     materialKey: "Mild Steel",
     thicknessOverrideMm: null,
     sheetIndex: 0,
     processes: { laser: true, bending: true, welding: false },
-    setupMin: DEFAULT_SETUP_MIN,
+    laserSetupMin: DEFAULT_SETUP_MIN,
+    bendingSetupMin: DEFAULT_SETUP_MIN,
+    weldingSetupMin: DEFAULT_SETUP_MIN,
     weldLengthMm: 0,
   });
   const costBreakdown = useMemo<CostBreakdown | null>(
@@ -391,8 +392,13 @@ export default function Home() {
   const showViewer = status === "viewing" || status === "exporting";
 
   return (
-    <main className="min-h-screen flex flex-col items-center justify-center gap-6 p-8">
-      <div className="text-center">
+    <main
+      className={[
+        "min-h-screen flex flex-col p-6 gap-5",
+        showViewer ? "items-start" : "items-center justify-center",
+      ].join(" ")}
+    >
+      <div className={showViewer ? "" : "text-center"}>
         <h1 className="text-2xl font-bold tracking-tight">STEP to Label</h1>
         <p className="mt-1 text-sm text-zinc-400">
           Rotate to pick a view, then export a clean hidden-line JPG.
@@ -449,289 +455,305 @@ export default function Home() {
 
       {errorMsg && <p className="max-w-xs text-center text-sm text-red-400">{errorMsg}</p>}
 
-      <div
-        ref={mountRef}
-        className={["w-full overflow-hidden rounded-xl border border-zinc-700 bg-white", showViewer ? "" : "hidden"].join(" ")}
-        style={{ aspectRatio: "1 / 1", maxWidth: 520 }}
-      />
+      {/* Two-column layout: mountRef always in DOM, hidden when not viewing */}
+      <div className={`flex gap-6 items-start w-full ${showViewer ? "" : "hidden"}`}>
 
-      {showViewer && (
-        <div className="flex w-full max-w-lg flex-col items-center gap-4">
-          <p className="text-xs text-zinc-500">
-            Left drag to rotate | Right drag to pan | Scroll to zoom
-          </p>
+        {/* ── Left column: viewer + export controls ── */}
+        <div className="flex flex-col gap-3 flex-shrink-0" style={{ width: 520 }}>
+          <div
+            ref={mountRef}
+            className="overflow-hidden rounded-xl border border-zinc-700 bg-white"
+            style={{ width: 520, height: 520 }}
+          />
 
-          <div className="flex w-full max-w-sm flex-col gap-1">
-            <label className="text-xs text-zinc-500">Part name (used as file name)</label>
-            <input
-              type="text"
-              value={partName}
-              onChange={(e) => setPartName(e.target.value)}
-              placeholder="e.g. BRACKET-001"
-              className="rounded border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm font-mono text-zinc-200 focus:border-blue-500 focus:outline-none"
-            />
-          </div>
+          {showViewer && (
+            <>
+              <p className="text-xs text-zinc-500">
+                Left drag to rotate · Right drag to pan · Scroll to zoom
+              </p>
 
-          <label className="flex items-center gap-3 text-sm text-zinc-400">
-            Line thickness
-            <input
-              type="range"
-              min={1}
-              max={10}
-              value={linePx}
-              onChange={(e) => setLinePx(Number(e.target.value))}
-              className="w-28 accent-blue-500"
-            />
-            <span className="w-4 text-zinc-200">{linePx}</span>
-          </label>
-
-          <div className="flex items-end gap-4">
-            <div className="flex flex-col">
-              <label className="text-xs text-zinc-500">Export size (cm)</label>
-              <input
-                type="number"
-                min={5}
-                max={100}
-                value={exportCm}
-                onChange={(e) => setExportCm(Number(e.target.value))}
-                className="w-20 rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm font-mono text-zinc-200"
-              />
-            </div>
-            <div className="flex flex-col">
-              <label className="text-xs text-zinc-500">DPI</label>
-              <input
-                type="number"
-                min={72}
-                max={1200}
-                value={exportDpi}
-                onChange={(e) => setExportDpi(Number(e.target.value))}
-                className="w-20 rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm font-mono text-zinc-200"
-              />
-            </div>
-            <button
-              onClick={exportJpg}
-              disabled={status === "exporting"}
-              className="rounded-lg bg-blue-600 px-5 py-2 text-sm font-medium transition-colors hover:bg-blue-500 disabled:opacity-50"
-            >
-              {status === "exporting" ? "Generating..." : `Export JPG (${exportCm}x${exportCm} cm @ ${exportDpi} dpi)`}
-            </button>
-            <button
-              onClick={reset}
-              className="rounded-lg bg-zinc-800 px-4 py-2 text-sm text-zinc-300 transition-colors hover:bg-zinc-700"
-            >
-              Load new file
-            </button>
-          </div>
-        </div>
-      )}
-
-      {showViewer && analysis && costBreakdown && (
-        <div className="w-full max-w-lg rounded-xl border border-zinc-700 p-4 flex flex-col gap-4">
-          <h2 className="text-sm font-semibold text-zinc-200">Cost Estimate (AUD)</h2>
-
-          <div className="flex flex-wrap gap-3 text-xs text-zinc-400">
-            <span>{analysis.bbox_mm[0]} × {analysis.bbox_mm[1]} × {analysis.bbox_mm[2]} mm</span>
-            <span>·</span>
-            <span>{analysis.bend_count} bend{analysis.bend_count !== 1 ? "s" : ""}</span>
-            <span>·</span>
-            <span>{analysis.hole_count} hole{analysis.hole_count !== 1 ? "s" : ""}</span>
-            <span>·</span>
-            <span>{(analysis.cut_perimeter_mm / 1000).toFixed(2)} m cut</span>
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
-            <div className="flex flex-col gap-1">
-              <label className="text-xs text-zinc-500">Quantity</label>
-              <input
-                type="number"
-                min={1}
-                value={costParams.qty}
-                onChange={(e) =>
-                  setCostParams((p) => ({ ...p, qty: Math.max(1, Number(e.target.value)) }))
-                }
-                className="rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm font-mono text-zinc-200"
-              />
-            </div>
-            <div className="flex flex-col gap-1">
-              <label className="text-xs text-zinc-500">MOQ</label>
-              <input
-                type="number"
-                min={1}
-                value={costParams.moq}
-                onChange={(e) =>
-                  setCostParams((p) => ({ ...p, moq: Math.max(1, Number(e.target.value)) }))
-                }
-                className="rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm font-mono text-zinc-200"
-              />
-            </div>
-            <div className="flex flex-col gap-1">
-              <label className="text-xs text-zinc-500">Material</label>
-              <select
-                value={costParams.materialKey}
-                onChange={(e) =>
-                  setCostParams((p) => ({ ...p, materialKey: e.target.value }))
-                }
-                className="rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm text-zinc-200"
-              >
-                {Object.keys(MATERIALS).map((k) => (
-                  <option key={k}>{k}</option>
-                ))}
-              </select>
-            </div>
-            <div className="flex flex-col gap-1">
-              <label className="text-xs text-zinc-500">Thickness (mm)</label>
-              <input
-                type="number"
-                min={0.5}
-                step={0.1}
-                value={costParams.thicknessOverrideMm ?? analysis.thickness_mm}
-                onChange={(e) =>
-                  setCostParams((p) => ({
-                    ...p,
-                    thicknessOverrideMm: Number(e.target.value),
-                  }))
-                }
-                className="rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm font-mono text-zinc-200"
-              />
-            </div>
-            <div className="flex flex-col gap-1">
-              <label className="text-xs text-zinc-500">Sheet size</label>
-              <select
-                value={costParams.sheetIndex}
-                onChange={(e) =>
-                  setCostParams((p) => ({ ...p, sheetIndex: Number(e.target.value) }))
-                }
-                className="rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm text-zinc-200"
-              >
-                {STANDARD_SHEETS.map((s, i) => (
-                  <option key={i} value={i}>
-                    {s.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="flex flex-col gap-1">
-              <label className="text-xs text-zinc-500">Setup time (min)</label>
-              <input
-                type="number"
-                min={0}
-                value={costParams.setupMin}
-                onChange={(e) =>
-                  setCostParams((p) => ({
-                    ...p,
-                    setupMin: Math.max(0, Number(e.target.value)),
-                  }))
-                }
-                className="rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm font-mono text-zinc-200"
-              />
-            </div>
-          </div>
-
-          <div className="flex flex-wrap gap-4 text-sm">
-            {(
-              [
-                ["laser", "Laser / Turret"],
-                ["bending", "CNC Bend"],
-                ["welding", "Welding"],
-              ] as const
-            ).map(([key, label]) => (
-              <label key={key} className="flex cursor-pointer items-center gap-2 text-zinc-300">
+              <div className="flex flex-col gap-1">
+                <label className="text-xs text-zinc-500">Part name</label>
                 <input
-                  type="checkbox"
-                  checked={costParams.processes[key]}
+                  type="text"
+                  value={partName}
+                  onChange={(e) => setPartName(e.target.value)}
+                  placeholder="e.g. BRACKET-001"
+                  className="rounded border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm font-mono text-zinc-200 focus:border-blue-500 focus:outline-none"
+                />
+              </div>
+
+              <label className="flex items-center gap-3 text-sm text-zinc-400">
+                Line thickness
+                <input
+                  type="range"
+                  min={1}
+                  max={10}
+                  value={linePx}
+                  onChange={(e) => setLinePx(Number(e.target.value))}
+                  className="w-28 accent-blue-500"
+                />
+                <span className="w-4 text-zinc-200">{linePx}</span>
+              </label>
+
+              <div className="flex gap-3">
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs text-zinc-500">Export size (cm)</label>
+                  <input
+                    type="number"
+                    min={5}
+                    max={100}
+                    value={exportCm}
+                    onChange={(e) => setExportCm(Number(e.target.value))}
+                    className="w-20 rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm font-mono text-zinc-200"
+                  />
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs text-zinc-500">DPI</label>
+                  <input
+                    type="number"
+                    min={72}
+                    max={1200}
+                    value={exportDpi}
+                    onChange={(e) => setExportDpi(Number(e.target.value))}
+                    className="w-20 rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm font-mono text-zinc-200"
+                  />
+                </div>
+              </div>
+
+              <div className="flex gap-2">
+                <button
+                  onClick={exportJpg}
+                  disabled={status === "exporting"}
+                  className="rounded-lg bg-blue-600 px-5 py-2 text-sm font-medium transition-colors hover:bg-blue-500 disabled:opacity-50"
+                >
+                  {status === "exporting"
+                    ? "Generating..."
+                    : `Export JPG (${exportCm}×${exportCm} cm @ ${exportDpi} dpi)`}
+                </button>
+                <button
+                  onClick={reset}
+                  className="rounded-lg bg-zinc-800 px-4 py-2 text-sm text-zinc-300 transition-colors hover:bg-zinc-700"
+                >
+                  Load new file
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* ── Right column: cost panel ── */}
+        {showViewer && analysis && costBreakdown && (
+          <div className="flex-1 min-w-[300px] max-w-sm rounded-xl border border-zinc-700 p-4 flex flex-col gap-4">
+            <h2 className="text-sm font-semibold text-zinc-200">Cost Estimate (AUD)</h2>
+
+            <div className="rounded-lg bg-zinc-900 p-3 text-xs text-zinc-400 flex flex-col gap-1">
+              <div>
+                <span className="text-zinc-500">Blank: </span>
+                {analysis.bbox_mm[0]} × {analysis.bbox_mm[1]} mm ·{" "}
+                <span className="text-zinc-500">t </span>
+                {analysis.thickness_mm} mm
+              </div>
+              <div className="flex gap-3">
+                <span>{analysis.bend_count} bend{analysis.bend_count !== 1 ? "s" : ""}</span>
+                <span>·</span>
+                <span>{analysis.hole_count} hole{analysis.hole_count !== 1 ? "s" : ""}</span>
+                <span>·</span>
+                <span>{(analysis.cut_perimeter_mm / 1000).toFixed(2)} m cut</span>
+              </div>
+              {analysis.flat_pattern_area_mm2 > 0 && (
+                <div>
+                  <span className="text-zinc-500">Flat area est.: </span>
+                  {(analysis.flat_pattern_area_mm2 / 100).toFixed(0)} cm²
+                </div>
+              )}
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="flex flex-col gap-1">
+                <label className="text-xs text-zinc-500">MOQ</label>
+                <input
+                  type="number"
+                  min={1}
+                  value={costParams.moq}
+                  onChange={(e) =>
+                    setCostParams((p) => ({ ...p, moq: Math.max(1, Number(e.target.value)) }))
+                  }
+                  className="rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm font-mono text-zinc-200"
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-xs text-zinc-500">Material</label>
+                <select
+                  value={costParams.materialKey}
+                  onChange={(e) => setCostParams((p) => ({ ...p, materialKey: e.target.value }))}
+                  className="rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm text-zinc-200"
+                >
+                  {Object.keys(MATERIALS).map((k) => (
+                    <option key={k}>{k}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-xs text-zinc-500">Thickness (mm)</label>
+                <input
+                  type="number"
+                  min={0.5}
+                  step={0.1}
+                  value={costParams.thicknessOverrideMm ?? analysis.thickness_mm}
                   onChange={(e) =>
                     setCostParams((p) => ({
                       ...p,
-                      processes: { ...p.processes, [key]: e.target.checked },
+                      thicknessOverrideMm: Number(e.target.value),
                     }))
                   }
-                  className="accent-blue-500"
+                  className="rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm font-mono text-zinc-200"
                 />
-                {label}
-              </label>
-            ))}
-          </div>
-
-          {costParams.processes.welding && (
-            <div className="flex flex-col gap-1">
-              <label className="text-xs text-zinc-500">Weld length (mm)</label>
-              <input
-                type="number"
-                min={0}
-                value={costParams.weldLengthMm}
-                onChange={(e) =>
-                  setCostParams((p) => ({
-                    ...p,
-                    weldLengthMm: Math.max(0, Number(e.target.value)),
-                  }))
-                }
-                className="w-36 rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm font-mono text-zinc-200"
-              />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-xs text-zinc-500">Sheet size</label>
+                <select
+                  value={costParams.sheetIndex}
+                  onChange={(e) =>
+                    setCostParams((p) => ({ ...p, sheetIndex: Number(e.target.value) }))
+                  }
+                  className="rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm text-zinc-200"
+                >
+                  {STANDARD_SHEETS.map((s, i) => (
+                    <option key={i} value={i}>
+                      {s.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
             </div>
-          )}
 
-          <div className="overflow-hidden rounded-lg bg-zinc-900">
-            <table className="w-full text-sm">
-              <tbody>
-                <tr className="border-b border-zinc-800">
-                  <td className="px-3 py-2 text-zinc-400">Material</td>
-                  <td className="px-3 py-2 text-right font-mono text-zinc-200">
-                    ${costBreakdown.materialUnit.toFixed(2)}
-                    <span className="ml-1 text-xs text-zinc-500">
-                      ({costBreakdown.blankMassKg.toFixed(3)} kg)
-                    </span>
-                  </td>
-                </tr>
-                {costParams.processes.laser && (
+            {/* Process toggles with per-process setup time */}
+            <div className="flex flex-col gap-2">
+              {(
+                [
+                  ["laser", "Laser / Turret", "laserSetupMin"],
+                  ["bending", "CNC Bend", "bendingSetupMin"],
+                  ["welding", "Welding", "weldingSetupMin"],
+                ] as const
+              ).map(([key, label, setupKey]) => (
+                <div key={key} className="flex items-center gap-2">
+                  <label className="flex w-32 cursor-pointer items-center gap-2 text-sm text-zinc-300">
+                    <input
+                      type="checkbox"
+                      checked={costParams.processes[key]}
+                      onChange={(e) =>
+                        setCostParams((p) => ({
+                          ...p,
+                          processes: { ...p.processes, [key]: e.target.checked },
+                        }))
+                      }
+                      className="accent-blue-500"
+                    />
+                    {label}
+                  </label>
+                  {costParams.processes[key] && (
+                    <>
+                      <span className="text-xs text-zinc-500">setup</span>
+                      <input
+                        type="number"
+                        min={0}
+                        value={costParams[setupKey]}
+                        onChange={(e) =>
+                          setCostParams((p) => ({
+                            ...p,
+                            [setupKey]: Math.max(0, Number(e.target.value)),
+                          }))
+                        }
+                        className="w-14 rounded border border-zinc-700 bg-zinc-800 px-2 py-0.5 text-xs font-mono text-zinc-200"
+                      />
+                      <span className="text-xs text-zinc-500">min</span>
+                    </>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            {costParams.processes.welding && (
+              <div className="flex flex-col gap-1">
+                <label className="text-xs text-zinc-500">Weld length (mm)</label>
+                <input
+                  type="number"
+                  min={0}
+                  value={costParams.weldLengthMm}
+                  onChange={(e) =>
+                    setCostParams((p) => ({
+                      ...p,
+                      weldLengthMm: Math.max(0, Number(e.target.value)),
+                    }))
+                  }
+                  className="w-36 rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm font-mono text-zinc-200"
+                />
+              </div>
+            )}
+
+            <div className="overflow-hidden rounded-lg bg-zinc-900">
+              <table className="w-full text-sm">
+                <tbody>
                   <tr className="border-b border-zinc-800">
-                    <td className="px-3 py-2 text-zinc-400">Laser / Turret</td>
+                    <td className="px-3 py-2 text-zinc-400">Material</td>
                     <td className="px-3 py-2 text-right font-mono text-zinc-200">
-                      ${costBreakdown.cuttingUnit.toFixed(2)}
+                      ${costBreakdown.materialUnit.toFixed(2)}
+                      <span className="ml-1 text-xs text-zinc-500">
+                        ({costBreakdown.blankMassKg.toFixed(3)} kg)
+                      </span>
                     </td>
                   </tr>
-                )}
-                {costParams.processes.bending && analysis.bend_count > 0 && (
-                  <tr className="border-b border-zinc-800">
+                  {costParams.processes.laser && (
+                    <tr className="border-b border-zinc-800">
+                      <td className="px-3 py-2 text-zinc-400">Laser / Turret</td>
+                      <td className="px-3 py-2 text-right font-mono text-zinc-200">
+                        ${costBreakdown.cuttingUnit.toFixed(2)}
+                      </td>
+                    </tr>
+                  )}
+                  {costParams.processes.bending && analysis.bend_count > 0 && (
+                    <tr className="border-b border-zinc-800">
+                      <td className="px-3 py-2 text-zinc-400">
+                        CNC Bending ({analysis.bend_count} bend{analysis.bend_count !== 1 ? "s" : ""})
+                      </td>
+                      <td className="px-3 py-2 text-right font-mono text-zinc-200">
+                        ${costBreakdown.bendingUnit.toFixed(2)}
+                      </td>
+                    </tr>
+                  )}
+                  {costParams.processes.welding && (
+                    <tr className="border-b border-zinc-800">
+                      <td className="px-3 py-2 text-zinc-400">Welding</td>
+                      <td className="px-3 py-2 text-right font-mono text-zinc-200">
+                        ${costBreakdown.weldingUnit.toFixed(2)}
+                      </td>
+                    </tr>
+                  )}
+                  <tr className="border-b border-zinc-700 bg-zinc-800/60">
+                    <td className="px-3 py-2 font-medium text-zinc-200">Total / unit</td>
+                    <td className="px-3 py-2 text-right font-mono font-semibold text-white">
+                      ${costBreakdown.totalUnit.toFixed(2)}
+                    </td>
+                  </tr>
+                  <tr>
                     <td className="px-3 py-2 text-zinc-400">
-                      CNC Bending ({analysis.bend_count} bend{analysis.bend_count !== 1 ? "s" : ""})
+                      Total × {costParams.moq} MOQ
                     </td>
-                    <td className="px-3 py-2 text-right font-mono text-zinc-200">
-                      ${costBreakdown.bendingUnit.toFixed(2)}
-                    </td>
-                  </tr>
-                )}
-                {costParams.processes.welding && (
-                  <tr className="border-b border-zinc-800">
-                    <td className="px-3 py-2 text-zinc-400">Welding</td>
-                    <td className="px-3 py-2 text-right font-mono text-zinc-200">
-                      ${costBreakdown.weldingUnit.toFixed(2)}
+                    <td className="px-3 py-2 text-right font-mono font-semibold text-blue-400">
+                      ${costBreakdown.totalAll.toFixed(2)}
                     </td>
                   </tr>
-                )}
-                <tr className="border-b border-zinc-700 bg-zinc-800/60">
-                  <td className="px-3 py-2 font-medium text-zinc-200">Total / unit</td>
-                  <td className="px-3 py-2 text-right font-mono font-semibold text-white">
-                    ${costBreakdown.totalUnit.toFixed(2)}
-                  </td>
-                </tr>
-                <tr>
-                  <td className="px-3 py-2 text-zinc-400">
-                    Total × {costParams.qty} unit{costParams.qty !== 1 ? "s" : ""}
-                  </td>
-                  <td className="px-3 py-2 text-right font-mono font-semibold text-blue-400">
-                    ${costBreakdown.totalAll.toFixed(2)}
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-            <div className="border-t border-zinc-800 px-3 py-2 text-xs text-zinc-500">
-              Sheet yield: {costBreakdown.partsPerSheet} parts/sheet ·{" "}
-              {costBreakdown.sheetsNeeded} sheet{costBreakdown.sheetsNeeded !== 1 ? "s" : ""} for{" "}
-              {Math.max(costParams.qty, costParams.moq)} pcs
+                </tbody>
+              </table>
+              <div className="border-t border-zinc-800 px-3 py-2 text-xs text-zinc-500">
+                Sheet yield: {costBreakdown.partsPerSheet} parts/sheet ·{" "}
+                {costBreakdown.sheetsNeeded} sheet{costBreakdown.sheetsNeeded !== 1 ? "s" : ""} for {costParams.moq} pcs
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </main>
   );
 }

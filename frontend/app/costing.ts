@@ -1,12 +1,13 @@
 // AUD sheet-metal fabrication cost engine — hardcoded defaults
 
 export interface PartAnalysis {
-  bbox_mm: [number, number, number]; // [W, H, T] sorted largest→smallest
+  bbox_mm: [number, number, number]; // [W, H, T]
   thickness_mm: number;
   cut_perimeter_mm: number;
   hole_count: number;
   bend_count: number;
   flat_area_mm2: number;
+  flat_pattern_area_mm2: number;
 }
 
 export interface Material {
@@ -38,7 +39,7 @@ export const MATERIALS: Record<string, Material> = {
 };
 
 export const STANDARD_SHEETS = [
-  { label: "2400 × 1200 mm", w: 2400, h: 1200 },
+  { label: "2400 × 1220 mm", w: 2400, h: 1220 },
   { label: "3000 × 1500 mm", w: 3000, h: 1500 },
   { label: "2500 × 1250 mm", w: 2500, h: 1250 },
 ];
@@ -55,7 +56,6 @@ export const RATES = {
 export const DEFAULT_SETUP_MIN = 15;
 
 export interface CostParams {
-  qty: number;
   moq: number;
   materialKey: string;
   thicknessOverrideMm: number | null;
@@ -65,7 +65,9 @@ export interface CostParams {
     bending: boolean;
     welding: boolean;
   };
-  setupMin: number;
+  laserSetupMin: number;
+  bendingSetupMin: number;
+  weldingSetupMin: number;
   weldLengthMm: number;
 }
 
@@ -86,18 +88,18 @@ export function calculateCost(
   params: CostParams,
 ): CostBreakdown {
   const {
-    qty,
     moq,
     materialKey,
     thicknessOverrideMm,
     sheetIndex,
     processes,
-    setupMin,
+    laserSetupMin,
+    bendingSetupMin,
+    weldingSetupMin,
     weldLengthMm,
   } = params;
 
-  const effectiveQty = Math.max(qty, moq, 1);
-  const setupHr = setupMin / 60;
+  const effectiveQty = Math.max(moq, 1);
   const mat = MATERIALS[materialKey] ?? MATERIALS["Mild Steel"];
   const sheet = STANDARD_SHEETS[sheetIndex] ?? STANDARD_SHEETS[0];
   const thickness = thicknessOverrideMm ?? analysis.thickness_mm;
@@ -117,9 +119,8 @@ export function calculateCost(
   // ── Laser / Turret ────────────────────────────────────────
   let cuttingUnit = 0;
   if (processes.laser) {
-    const cutTimeHr =
-      analysis.cut_perimeter_mm / mat.laserSpeedMmPerMin / 60;
-    const setupAmortised = (setupHr * RATES.laser) / effectiveQty;
+    const cutTimeHr = analysis.cut_perimeter_mm / mat.laserSpeedMmPerMin / 60;
+    const setupAmortised = (laserSetupMin / 60) * RATES.laser / effectiveQty;
     cuttingUnit = cutTimeHr * RATES.laser + setupAmortised;
   }
 
@@ -127,7 +128,7 @@ export function calculateCost(
   let bendingUnit = 0;
   if (processes.bending && analysis.bend_count > 0) {
     const bendTimeHr = (analysis.bend_count * RATES.timePerBendMin) / 60;
-    const setupAmortised = (setupHr * RATES.bending) / effectiveQty;
+    const setupAmortised = (bendingSetupMin / 60) * RATES.bending / effectiveQty;
     bendingUnit = bendTimeHr * RATES.bending + setupAmortised;
   }
 
@@ -135,7 +136,7 @@ export function calculateCost(
   let weldingUnit = 0;
   if (processes.welding && weldLengthMm > 0) {
     const weldTimeHr = weldLengthMm / RATES.weldSpeedMmPerMin / 60;
-    const setupAmortised = (setupHr * RATES.welding) / effectiveQty;
+    const setupAmortised = (weldingSetupMin / 60) * RATES.welding / effectiveQty;
     weldingUnit = weldTimeHr * RATES.welding + setupAmortised;
   }
 
@@ -147,7 +148,7 @@ export function calculateCost(
     bendingUnit,
     weldingUnit,
     totalUnit,
-    totalAll: totalUnit * Math.max(qty, 1),
+    totalAll: totalUnit * effectiveQty,
     sheetsNeeded,
     partsPerSheet,
     blankMassKg,
