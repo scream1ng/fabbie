@@ -22,7 +22,7 @@ function cmDpiToPx(cm: number, dpi: number) {
   return Math.round((cm / 2.54) * dpi);
 }
 
-export default function Home() {
+export function Home() {
   const [file, setFile] = useState<File | null>(null);
   const [dragging, setDragging] = useState(false);
   const [linePx, setLinePx] = useState(3);
@@ -757,3 +757,5 @@ export default function Home() {
     </main>
   );
 }
+
+export default Home;

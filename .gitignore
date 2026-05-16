@@ -31,3 +31,8 @@ npm-debug.log*
 # Local exports / temp files
 *.tmp
 *.temp
+
+# Environment / secrets
+.env
+.env.local
+.env.*.local
