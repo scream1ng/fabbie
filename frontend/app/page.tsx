@@ -1,12 +1,20 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js";
 import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
 import { LineSegments2 } from "three/examples/jsm/lines/LineSegments2.js";
 import { LineSegmentsGeometry } from "three/examples/jsm/lines/LineSegmentsGeometry.js";
+
+import type { CostBreakdown, CostParams, PartAnalysis } from "./costing";
+import {
+  calculateCost,
+  DEFAULT_SETUP_MIN,
+  MATERIALS,
+  STANDARD_SHEETS,
+} from "./costing";
 
 type Status = "idle" | "loading" | "viewing" | "exporting" | "error";
 
@@ -23,6 +31,21 @@ export default function Home() {
   const [errorMsg, setErrorMsg] = useState("");
   const [exportCm, setExportCm] = useState(26);
   const [exportDpi, setExportDpi] = useState(300);
+  const [analysis, setAnalysis] = useState<PartAnalysis | null>(null);
+  const [costParams, setCostParams] = useState<CostParams>({
+    qty: 1,
+    moq: 1,
+    materialKey: "Mild Steel",
+    thicknessOverrideMm: null,
+    sheetIndex: 0,
+    processes: { laser: true, bending: true, welding: false },
+    setupMin: DEFAULT_SETUP_MIN,
+    weldLengthMm: 0,
+  });
+  const costBreakdown = useMemo<CostBreakdown | null>(
+    () => (analysis ? calculateCost(analysis, costParams) : null),
+    [analysis, costParams],
+  );
 
   const mountRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
@@ -86,27 +109,37 @@ export default function Home() {
       const id = ++loadIdRef.current;
       setStatus("loading");
       setErrorMsg("");
+      setAnalysis(null);
 
       const meshForm = new FormData();
       meshForm.append("file", nextFile);
       const edgesForm = new FormData();
       edgesForm.append("file", nextFile);
+      const analyseForm = new FormData();
+      analyseForm.append("file", nextFile);
 
       try {
-        const [meshRes, edgesRes] = await Promise.all([
+        const [meshRes, edgesRes, analyseRes] = await Promise.all([
           fetch("/api/mesh", { method: "POST", body: meshForm }),
           fetch("/api/edges", { method: "POST", body: edgesForm }),
+          fetch("/api/analyse", { method: "POST", body: analyseForm }),
         ]);
         if (id !== loadIdRef.current) return;
         if (!meshRes.ok) throw new Error(`Mesh: ${meshRes.status}`);
         if (!edgesRes.ok) throw new Error(`Edges: ${edgesRes.status}`);
 
-        const [stlBlob, edgesData]: [Blob, number[][][]] = await Promise.all([
+        const [stlBlob, edgesData, analysisData]: [
+          Blob,
+          number[][][],
+          PartAnalysis | null,
+        ] = await Promise.all([
           meshRes.blob(),
           edgesRes.json(),
+          analyseRes.ok ? analyseRes.json() : Promise.resolve(null),
         ]);
         if (id !== loadIdRef.current) return;
 
+        if (analysisData) setAnalysis(analysisData);
         cleanup();
 
         const mount = mountRef.current;
@@ -351,6 +384,7 @@ export default function Home() {
     setStatus("idle");
     setErrorMsg("");
     setPartName("");
+    setAnalysis(null);
   };
 
   const showDrop = status === "idle" || status === "error";
@@ -487,6 +521,214 @@ export default function Home() {
             >
               Load new file
             </button>
+          </div>
+        </div>
+      )}
+
+      {showViewer && analysis && costBreakdown && (
+        <div className="w-full max-w-lg rounded-xl border border-zinc-700 p-4 flex flex-col gap-4">
+          <h2 className="text-sm font-semibold text-zinc-200">Cost Estimate (AUD)</h2>
+
+          <div className="flex flex-wrap gap-3 text-xs text-zinc-400">
+            <span>{analysis.bbox_mm[0]} × {analysis.bbox_mm[1]} × {analysis.bbox_mm[2]} mm</span>
+            <span>·</span>
+            <span>{analysis.bend_count} bend{analysis.bend_count !== 1 ? "s" : ""}</span>
+            <span>·</span>
+            <span>{analysis.hole_count} hole{analysis.hole_count !== 1 ? "s" : ""}</span>
+            <span>·</span>
+            <span>{(analysis.cut_perimeter_mm / 1000).toFixed(2)} m cut</span>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div className="flex flex-col gap-1">
+              <label className="text-xs text-zinc-500">Quantity</label>
+              <input
+                type="number"
+                min={1}
+                value={costParams.qty}
+                onChange={(e) =>
+                  setCostParams((p) => ({ ...p, qty: Math.max(1, Number(e.target.value)) }))
+                }
+                className="rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm font-mono text-zinc-200"
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-xs text-zinc-500">MOQ</label>
+              <input
+                type="number"
+                min={1}
+                value={costParams.moq}
+                onChange={(e) =>
+                  setCostParams((p) => ({ ...p, moq: Math.max(1, Number(e.target.value)) }))
+                }
+                className="rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm font-mono text-zinc-200"
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-xs text-zinc-500">Material</label>
+              <select
+                value={costParams.materialKey}
+                onChange={(e) =>
+                  setCostParams((p) => ({ ...p, materialKey: e.target.value }))
+                }
+                className="rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm text-zinc-200"
+              >
+                {Object.keys(MATERIALS).map((k) => (
+                  <option key={k}>{k}</option>
+                ))}
+              </select>
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-xs text-zinc-500">Thickness (mm)</label>
+              <input
+                type="number"
+                min={0.5}
+                step={0.1}
+                value={costParams.thicknessOverrideMm ?? analysis.thickness_mm}
+                onChange={(e) =>
+                  setCostParams((p) => ({
+                    ...p,
+                    thicknessOverrideMm: Number(e.target.value),
+                  }))
+                }
+                className="rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm font-mono text-zinc-200"
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-xs text-zinc-500">Sheet size</label>
+              <select
+                value={costParams.sheetIndex}
+                onChange={(e) =>
+                  setCostParams((p) => ({ ...p, sheetIndex: Number(e.target.value) }))
+                }
+                className="rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm text-zinc-200"
+              >
+                {STANDARD_SHEETS.map((s, i) => (
+                  <option key={i} value={i}>
+                    {s.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-xs text-zinc-500">Setup time (min)</label>
+              <input
+                type="number"
+                min={0}
+                value={costParams.setupMin}
+                onChange={(e) =>
+                  setCostParams((p) => ({
+                    ...p,
+                    setupMin: Math.max(0, Number(e.target.value)),
+                  }))
+                }
+                className="rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm font-mono text-zinc-200"
+              />
+            </div>
+          </div>
+
+          <div className="flex flex-wrap gap-4 text-sm">
+            {(
+              [
+                ["laser", "Laser / Turret"],
+                ["bending", "CNC Bend"],
+                ["welding", "Welding"],
+              ] as const
+            ).map(([key, label]) => (
+              <label key={key} className="flex cursor-pointer items-center gap-2 text-zinc-300">
+                <input
+                  type="checkbox"
+                  checked={costParams.processes[key]}
+                  onChange={(e) =>
+                    setCostParams((p) => ({
+                      ...p,
+                      processes: { ...p.processes, [key]: e.target.checked },
+                    }))
+                  }
+                  className="accent-blue-500"
+                />
+                {label}
+              </label>
+            ))}
+          </div>
+
+          {costParams.processes.welding && (
+            <div className="flex flex-col gap-1">
+              <label className="text-xs text-zinc-500">Weld length (mm)</label>
+              <input
+                type="number"
+                min={0}
+                value={costParams.weldLengthMm}
+                onChange={(e) =>
+                  setCostParams((p) => ({
+                    ...p,
+                    weldLengthMm: Math.max(0, Number(e.target.value)),
+                  }))
+                }
+                className="w-36 rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm font-mono text-zinc-200"
+              />
+            </div>
+          )}
+
+          <div className="overflow-hidden rounded-lg bg-zinc-900">
+            <table className="w-full text-sm">
+              <tbody>
+                <tr className="border-b border-zinc-800">
+                  <td className="px-3 py-2 text-zinc-400">Material</td>
+                  <td className="px-3 py-2 text-right font-mono text-zinc-200">
+                    ${costBreakdown.materialUnit.toFixed(2)}
+                    <span className="ml-1 text-xs text-zinc-500">
+                      ({costBreakdown.blankMassKg.toFixed(3)} kg)
+                    </span>
+                  </td>
+                </tr>
+                {costParams.processes.laser && (
+                  <tr className="border-b border-zinc-800">
+                    <td className="px-3 py-2 text-zinc-400">Laser / Turret</td>
+                    <td className="px-3 py-2 text-right font-mono text-zinc-200">
+                      ${costBreakdown.cuttingUnit.toFixed(2)}
+                    </td>
+                  </tr>
+                )}
+                {costParams.processes.bending && analysis.bend_count > 0 && (
+                  <tr className="border-b border-zinc-800">
+                    <td className="px-3 py-2 text-zinc-400">
+                      CNC Bending ({analysis.bend_count} bend{analysis.bend_count !== 1 ? "s" : ""})
+                    </td>
+                    <td className="px-3 py-2 text-right font-mono text-zinc-200">
+                      ${costBreakdown.bendingUnit.toFixed(2)}
+                    </td>
+                  </tr>
+                )}
+                {costParams.processes.welding && (
+                  <tr className="border-b border-zinc-800">
+                    <td className="px-3 py-2 text-zinc-400">Welding</td>
+                    <td className="px-3 py-2 text-right font-mono text-zinc-200">
+                      ${costBreakdown.weldingUnit.toFixed(2)}
+                    </td>
+                  </tr>
+                )}
+                <tr className="border-b border-zinc-700 bg-zinc-800/60">
+                  <td className="px-3 py-2 font-medium text-zinc-200">Total / unit</td>
+                  <td className="px-3 py-2 text-right font-mono font-semibold text-white">
+                    ${costBreakdown.totalUnit.toFixed(2)}
+                  </td>
+                </tr>
+                <tr>
+                  <td className="px-3 py-2 text-zinc-400">
+                    Total × {costParams.qty} unit{costParams.qty !== 1 ? "s" : ""}
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono font-semibold text-blue-400">
+                    ${costBreakdown.totalAll.toFixed(2)}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+            <div className="border-t border-zinc-800 px-3 py-2 text-xs text-zinc-500">
+              Sheet yield: {costBreakdown.partsPerSheet} parts/sheet ·{" "}
+              {costBreakdown.sheetsNeeded} sheet{costBreakdown.sheetsNeeded !== 1 ? "s" : ""} for{" "}
+              {Math.max(costParams.qty, costParams.moq)} pcs
+            </div>
           </div>
         </div>
       )}

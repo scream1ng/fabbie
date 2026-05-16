@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 
 from fastapi.responses import JSONResponse
+from cost_analysis import analyse_part
 from step_processor import step_to_edges_json, step_to_jpg, step_to_stl
 
 app = FastAPI(title="step-to-label API")
@@ -130,3 +131,22 @@ async def convert(
         media_type="image/jpeg",
         headers={"Content-Disposition": f'attachment; filename="{stem}_label.jpg"'},
     )
+
+
+@app.post("/api/analyse")
+async def analyse(file: UploadFile = File(...)):
+    """Return fabrication feature analysis (bbox, bends, perimeter, etc.) for cost estimation."""
+    _check_file(file)
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "Empty file")
+    tmp_path = _save_upload(data)
+    try:
+        result = analyse_part(tmp_path)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"Analysis error: {e}")
+    finally:
+        os.unlink(tmp_path)
+    return JSONResponse(content=result)
