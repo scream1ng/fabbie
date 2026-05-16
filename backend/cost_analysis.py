@@ -91,126 +91,178 @@ def _bbox_project(corners, dx, dy, dz):
     return max(projs) - min(projs)
 
 
+from collections import Counter
+
 def analyse_part(path: str) -> dict:
     shape = load_step(path)
 
-    # ── Bounding box ─────────────────────────────────────────
-    bbox = Bnd_Box()
-    _bbox_add(shape, bbox)
-    xmin, ymin, zmin, xmax, ymax, zmax = bbox.Get()
-    corners = [
-        (xmin, ymin, zmin), (xmax, ymin, zmin),
-        (xmin, ymax, zmin), (xmax, ymax, zmin),
-        (xmin, ymin, zmax), (xmax, ymin, zmax),
-        (xmin, ymax, zmax), (xmax, ymax, zmax),
-    ]
-
-    # ── Pass 1: flat faces → thickness direction + area ──────
-    largest_flat_area = 0.0
-    flat_area_mm2 = 0.0
-    thickness_normal: tuple[float, float, float] | None = None
-    seen_p1: set[int] = set()
-
+    # ── Geometry Extraction ──────────────────────────────────
+    planes = []
+    cylinders = []
+    seen_faces = set()
     exp = TopExp_Explorer(shape, TopAbs_FACE)
     while exp.More():
         curr = exp.Current()
         fid = id(curr.TShape())
-        if fid not in seen_p1:
-            seen_p1.add(fid)
+        if fid not in seen_faces:
+            seen_faces.add(fid)
             try:
                 face = _as_face(curr)
                 adaptor = BRepAdaptor_Surface(face)
-                if adaptor.GetType() == GeomAbs_Plane:
-                    props = GProp_GProps()
-                    _surface_props(face, props)
-                    area = abs(props.Mass())
-                    if math.isfinite(area):
-                        flat_area_mm2 += area
-                        if area > largest_flat_area:
-                            largest_flat_area = area
-                            d = adaptor.Plane().Axis().Direction()
-                            thickness_normal = (abs(d.X()), abs(d.Y()), abs(d.Z()))
+                props = GProp_GProps()
+                _surface_props(face, props)
+                area = abs(props.Mass())
+                if not math.isfinite(area) or area < 1e-6:
+                    exp.Next()
+                    continue
+
+                stype = adaptor.GetType()
+                if stype == GeomAbs_Plane:
+                    p = adaptor.Plane()
+                    planes.append({
+                        "area": area,
+                        "normal": (p.Axis().Direction().X(), p.Axis().Direction().Y(), p.Axis().Direction().Z()),
+                        "d": p.Location().Dot(p.Axis().Direction()),
+                        "face": face
+                    })
+                elif stype == GeomAbs_Cylinder:
+                    c = adaptor.Cylinder()
+                    cylinders.append({
+                        "area": area,
+                        "radius": c.Radius(),
+                        "axis": (c.Axis().Direction().X(), c.Axis().Direction().Y(), c.Axis().Direction().Z()),
+                        "face": face
+                    })
             except Exception as exc:
-                logger.debug("Face pass1: %s", exc)
+                logger.debug("Face extract: %s", exc)
         exp.Next()
 
-    # Thickness = extent along face normal; blank dims = perpendicular extent
-    if thickness_normal is not None:
-        nx, ny, nz = thickness_normal
-        thickness_mm = _bbox_project(corners, nx, ny, nz)
-        (ux, uy, uz), (vx, vy, vz) = _ortho_axes(nx, ny, nz)
-        fp_a = _bbox_project(corners, ux, uy, uz)
-        fp_b = _bbox_project(corners, vx, vy, vz)
-        blank_w = max(fp_a, fp_b)
-        blank_h = min(fp_a, fp_b)
+    # ── Thickness Detection (Parallel Face Pairing) ───────────
+    distances = []
+    for i in range(len(planes)):
+        for j in range(i + 1, len(planes)):
+            n1 = planes[i]["normal"]
+            n2 = planes[j]["normal"]
+            # Check if normals are parallel or anti-parallel
+            dot = n1[0]*n2[0] + n1[1]*n2[1] + n1[2]*n2[2]
+            if abs(abs(dot) - 1.0) < 1e-3:
+                dist = abs(planes[i]["d"] - (planes[j]["d"] if dot > 0 else -planes[j]["d"]))
+                if 0.1 < dist < 30.0:  # Sensible sheet thickness range
+                    distances.append(round(dist, 2))
+    
+    if distances:
+        # Use most common distance as thickness
+        thickness_mm = Counter(distances).most_common(1)[0][0]
     else:
-        dims = sorted([xmax - xmin, ymax - ymin, zmax - zmin])
-        thickness_mm, blank_h, blank_w = dims[0], dims[1], dims[2]
+        # Fallback to bbox smallest dim if no parallel faces found
+        bbox = Bnd_Box()
+        _bbox_add(shape, bbox)
+        xmin, ymin, zmin, xmax, ymax, zmax = bbox.Get()
+        thickness_mm = min(xmax - xmin, ymax - ymin, zmax - zmin)
 
-    # ── Pass 2: count bends (cylindrical faces with axis ⊥ thickness) ──
-    bend_count = 0
-    seen_p2: set[int] = set()
-
-    exp2 = TopExp_Explorer(shape, TopAbs_FACE)
-    while exp2.More():
-        curr = exp2.Current()
-        fid = id(curr.TShape())
-        if fid not in seen_p2:
-            seen_p2.add(fid)
-            try:
-                face = _as_face(curr)
-                adaptor = BRepAdaptor_Surface(face)
-                if adaptor.GetType() == GeomAbs_Cylinder:
-                    if thickness_normal is not None:
-                        ax = adaptor.Cylinder().Axis().Direction()
-                        dot = abs(
-                            ax.X() * thickness_normal[0]
-                            + ax.Y() * thickness_normal[1]
-                            + ax.Z() * thickness_normal[2]
-                        )
-                        # axis ⊥ to sheet normal → bend; axis ∥ → hole wall
-                        if dot < 0.5:
-                            bend_count += 1
-                    else:
-                        bend_count += 1
-            except Exception as exc:
-                logger.debug("Face pass2: %s", exc)
-        exp2.Next()
+    # ── Flat Pattern Calculation ─────────────────────────────
+    # Sum of areas of one side (Total Area / 2) is a good start,
+    # but we can refine it by considering the neutral axis.
+    total_surface_area = sum(p["area"] for p in planes) + sum(c["area"] for c in cylinders)
+    
+    # Identify unique bends and flanges
+    bend_count = len(cylinders) // 2  # Assuming internal/external cylinder pairs
+    
+    # Calculate neutral area for cylinders
+    # A_neutral = A_surface * (R_neutral / R_surface)
+    # K-factor 0.44 is common for mild steel
+    k_factor = 0.44
+    neutral_area = 0.0
+    for c in cylinders:
+        # Try to guess if it's internal or external radius
+        # Typically internal R < external R by 'thickness'
+        # We simplify: assume all cylindrical faces are bends and take mid-radius
+        r = c["radius"]
+        # If we found thickness, we can estimate neutral radius
+        # But without knowing if 'r' is inner or outer, we take the average 
+        # of the total cylindrical surface area adjusted for K-factor
+        neutral_area += c["area"] # Simplified: area of one side is ~ Half the total cylinder area
+    
+    flat_area_mm2 = (sum(p["area"] for p in planes) / 2.0) + (sum(c["area"] for c in cylinders) / 2.0)
 
     # ── Edge analysis: cut perimeter + hole count ─────────────
+    # A 'cut' edge is usually one shared by only 1 face (boundary)
+    # or edges forming internal holes.
     cut_perimeter_mm = 0.0
     circle_count = 0
-    seen_edges: set[int] = set()
+    
+    edge_to_faces = {}
+    exp_e = TopExp_Explorer(shape, TopAbs_EDGE)
+    while exp_e.More():
+        edge = _as_edge(exp_e.Current())
+        eid = id(edge.TShape())
+        if eid not in edge_to_faces:
+            edge_to_faces[eid] = []
+        
+        # Find faces sharing this edge
+        # This is expensive, but necessary for accurate perimeter
+        exp_f = TopExp_Explorer(shape, TopAbs_FACE)
+        face_count = 0
+        while exp_f.More():
+            face = _as_face(exp_f.Current())
+            # Check if edge belongs to face
+            exp_ef = TopExp_Explorer(face, TopAbs_EDGE)
+            while exp_ef.More():
+                if exp_ef.Current().IsSame(edge):
+                    face_count += 1
+                    break
+                exp_ef.Next()
+            exp_f.Next()
+        
+        try:
+            curve = BRepAdaptor_Curve(edge)
+            first = curve.FirstParameter()
+            last = curve.LastParameter()
+            if math.isfinite(first) and math.isfinite(last) and last > first:
+                length = _edge_length(curve)
+                # If shared by only 1 face, it's a boundary cut
+                # If shared by 2 faces and it's a 'sharp' or 'bend' edge, it's NOT a cut
+                if face_count == 1:
+                    cut_perimeter_mm += length
+                
+                if curve.GetType() == GeomAbs_Circle:
+                    # Circular edges are often holes (count both sides)
+                    circle_count += 1
+        except Exception:
+            pass
+        exp_e.Next()
 
-    exp3 = TopExp_Explorer(shape, TopAbs_EDGE)
-    while exp3.More():
-        curr = exp3.Current()
-        eid = id(curr.TShape())
-        if eid not in seen_edges:
-            seen_edges.add(eid)
-            try:
-                edge = _as_edge(curr)
-                curve = BRepAdaptor_Curve(edge)
-                first = curve.FirstParameter()
-                last = curve.LastParameter()
-                if math.isfinite(first) and math.isfinite(last) and last > first:
-                    length = _edge_length(curve)
-                    if math.isfinite(length) and length > 0:
-                        cut_perimeter_mm += length
-                    if curve.GetType() == GeomAbs_Circle:
-                        circle_count += 1
-            except Exception as exc:
-                logger.debug("Edge skip: %s", exc)
-        exp3.Next()
-
+    # In sheet metal, hole count is usually number of interior loops.
+    # Simplified: circle pairs (top/bottom)
     hole_count = max(0, circle_count // 2)
+    
+    # ── Flat Blank Estimation ────────────────────────────────
+    # We have flat_area_mm2. We want to guess L and W.
+    # We use the aspect ratio of the largest face as a heuristic.
+    if planes:
+        largest_p = max(planes, key=lambda x: x["area"])
+        # Get aspect ratio of this face using its bbox
+        f_bbox = Bnd_Box()
+        _bbox_add(largest_p["face"], f_bbox)
+        fx1, fy1, fz1, fx2, fy2, fz2 = f_bbox.Get()
+        # The face is flat, so one dimension is small (thickness)
+        f_dims = sorted([fx2 - fx1, fy2 - fy1, fz2 - fz1], reverse=True)
+        f_l, f_w = f_dims[0], f_dims[1]
+        aspect_ratio = f_l / max(f_w, 1.0)
+        
+        # Area = L * W, L/W = aspect_ratio => Area = W * aspect_ratio * W
+        blank_w = math.sqrt(flat_area_mm2 / aspect_ratio)
+        blank_l = blank_w * aspect_ratio
+    else:
+        side = math.sqrt(flat_area_mm2)
+        blank_l, blank_w = side, side
 
     return {
-        "bbox_mm": [round(blank_w, 1), round(blank_h, 1), round(thickness_mm, 1)],
+        "bbox_mm": [round(blank_l, 1), round(blank_w, 1), round(thickness_mm, 1)],
         "thickness_mm": round(thickness_mm, 1),
         "cut_perimeter_mm": round(cut_perimeter_mm, 1),
         "hole_count": hole_count,
         "bend_count": bend_count,
         "flat_area_mm2": round(flat_area_mm2, 1),
-        "flat_pattern_area_mm2": round(flat_area_mm2 / 2.0, 1),
+        "flat_pattern_area_mm2": round(flat_area_mm2, 1),
     }

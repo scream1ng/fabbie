@@ -29,7 +29,7 @@ export default function Home() {
   const [partName, setPartName] = useState("");
   const [status, setStatus] = useState<Status>("idle");
   const [errorMsg, setErrorMsg] = useState("");
-  const [exportCm, setExportCm] = useState(26);
+  const [exportCm, setExportCm] = useState(2.6);
   const [exportDpi, setExportDpi] = useState(300);
   const [analysis, setAnalysis] = useState<PartAnalysis | null>(null);
   const [costParams, setCostParams] = useState<CostParams>({
@@ -498,13 +498,13 @@ export default function Home() {
 
               <div className="flex gap-3">
                 <div className="flex flex-col gap-1">
-                  <label className="text-xs text-zinc-500">Export size (cm)</label>
+                  <label className="text-xs text-zinc-500">Export size (mm)</label>
                   <input
                     type="number"
                     min={5}
-                    max={100}
-                    value={exportCm}
-                    onChange={(e) => setExportCm(Number(e.target.value))}
+                    max={1000}
+                    value={Math.round(exportCm * 10)}
+                    onChange={(e) => setExportCm(Number(e.target.value) / 10)}
                     className="w-20 rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm font-mono text-zinc-200"
                   />
                 </div>
@@ -529,7 +529,7 @@ export default function Home() {
                 >
                   {status === "exporting"
                     ? "Generating..."
-                    : `Export JPG (${exportCm}×${exportCm} cm @ ${exportDpi} dpi)`}
+                    : `Export JPG (${Math.round(exportCm * 10)}×${Math.round(exportCm * 10)} mm @ ${exportDpi} dpi)`}
                 </button>
                 <button
                   onClick={reset}
@@ -549,7 +549,7 @@ export default function Home() {
 
             <div className="rounded-lg bg-zinc-900 p-3 text-xs text-zinc-400 flex flex-col gap-1">
               <div>
-                <span className="text-zinc-500">Blank: </span>
+                <span className="text-zinc-500">Flat Blank: </span>
                 {analysis.bbox_mm[0]} × {analysis.bbox_mm[1]} mm ·{" "}
                 <span className="text-zinc-500">t </span>
                 {analysis.thickness_mm} mm
@@ -563,8 +563,8 @@ export default function Home() {
               </div>
               {analysis.flat_pattern_area_mm2 > 0 && (
                 <div>
-                  <span className="text-zinc-500">Flat area est.: </span>
-                  {(analysis.flat_pattern_area_mm2 / 100).toFixed(0)} cm²
+                  <span className="text-zinc-500">Flat Area: </span>
+                  {analysis.flat_pattern_area_mm2.toFixed(0)} mm²
                 </div>
               )}
             </div>
