@@ -7,11 +7,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 
 from fastapi.responses import JSONResponse
-from cost_analysis import analyse_part
-from flat_pattern import unfold
+import base64
+from analysis.blank import analyse_blank
+from analysis.part_analyser import analyse_part
 
 try:
-    from step_processor import step_to_edges_json, step_to_jpg, step_to_stl
+    from cad.geometry import step_to_edges_json, brep_edges
+    from cad.preview import step_to_stl, shape_to_stl
+    from cad.loader import load_step
+    from exports.jpg import step_to_jpg
     _OCC_AVAILABLE = True
 except ImportError:
     _OCC_AVAILABLE = False
@@ -41,6 +45,42 @@ def _check_file(file: UploadFile) -> None:
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.post("/api/full-process")
+async def full_process(file: UploadFile = File(...)):
+    """Unified endpoint to return mesh, edges, and analysis in one request."""
+    _check_file(file)
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "Empty file")
+    tmp_path = _save_upload(data)
+    try:
+        result = {}
+        
+        # 1. Regex-based analysis (fast, works without OCC)
+        try:
+            result["analysis"] = analyse_part(tmp_path)
+        except Exception as e:
+            result["analysis_error"] = str(e)
+            
+        # 2. OCC-based processing
+        if _OCC_AVAILABLE:
+            try:
+                shape = load_step(tmp_path)
+                # STL Mesh
+                stl_bytes = shape_to_stl(shape)
+                result["stl_base64"] = base64.b64encode(stl_bytes).decode("utf-8")
+                # Edges
+                result["edges"] = brep_edges(shape)
+            except Exception as e:
+                result["occ_error"] = str(e)
+        else:
+            result["occ_error"] = "OCC not available"
+            
+        return JSONResponse(content=result)
+    finally:
+        os.unlink(tmp_path)
 
 
 @app.post("/api/mesh")
@@ -155,16 +195,6 @@ async def analyse(file: UploadFile = File(...)):
     tmp_path = _save_upload(data)
     try:
         result = analyse_part(tmp_path)
-        try:
-            fp = unfold(tmp_path, k_factor=0.33)
-            w, h = fp["bbox_mm"]
-            result["flat_blank_w_mm"] = round(w, 1)
-            result["flat_blank_h_mm"] = round(h, 1)
-            result["cut_perimeter_mm"] = round(2 * (w + h) + sum(
-                3.14159 * d for d in result.get("holes_mm", [])
-            ), 1)
-        except Exception:
-            pass
     except ValueError as e:
         raise HTTPException(422, str(e))
     except Exception as e:
@@ -186,7 +216,7 @@ async def flat_pattern(
         raise HTTPException(400, "Empty file")
     tmp_path = _save_upload(data)
     try:
-        result = unfold(tmp_path, k_factor=k_factor)
+        result = analyse_blank(tmp_path, k_factor=k_factor)
     except ValueError as e:
         raise HTTPException(422, str(e))
     except Exception as e:
