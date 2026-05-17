@@ -8,7 +8,13 @@ from fastapi.responses import Response
 
 from fastapi.responses import JSONResponse
 from cost_analysis import analyse_part
-from step_processor import step_to_edges_json, step_to_jpg, step_to_stl
+from flat_pattern import unfold
+
+try:
+    from step_processor import step_to_edges_json, step_to_jpg, step_to_stl
+    _OCC_AVAILABLE = True
+except ImportError:
+    _OCC_AVAILABLE = False
 
 app = FastAPI(title="step-to-label API")
 
@@ -40,6 +46,8 @@ async def health():
 @app.post("/api/mesh")
 async def mesh(file: UploadFile = File(...)):
     """Return binary STL for Three.js interactive preview."""
+    if not _OCC_AVAILABLE:
+        raise HTTPException(503, "3D viewer requires pythonocc-core (conda install)")
     _check_file(file)
     data = await file.read()
     if not data:
@@ -59,6 +67,8 @@ async def mesh(file: UploadFile = File(...)):
 @app.post("/api/edges")
 async def edges(file: UploadFile = File(...)):
     """Return BRep edges as JSON 3D polylines (includes fillet/smooth edges)."""
+    if not _OCC_AVAILABLE:
+        raise HTTPException(503, "3D viewer requires pythonocc-core (conda install)")
     _check_file(file)
     data = await file.read()
     if not data:
@@ -94,6 +104,8 @@ async def convert(
     focus: Optional[float] = Query(None, gt=0),
     fov_deg: Optional[float] = Query(None, gt=0, lt=180),
 ):
+    if not _OCC_AVAILABLE:
+        raise HTTPException(503, "Convert requires pythonocc-core (conda install)")
     _check_file(file)
     data = await file.read()
     if not data:
@@ -150,3 +162,38 @@ async def analyse(file: UploadFile = File(...)):
     finally:
         os.unlink(tmp_path)
     return JSONResponse(content=result)
+
+
+@app.post("/api/flat-pattern")
+async def flat_pattern(
+    file: UploadFile = File(...),
+    k_factor: float = Query(0.33, ge=0.0, le=0.5),
+):
+    """Return flat pattern as SVG + metadata (bends, blank size, bend allowances)."""
+    _check_file(file)
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "Empty file")
+    tmp_path = _save_upload(data)
+    try:
+        result = unfold(tmp_path, k_factor=k_factor)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"Flat pattern error: {e}")
+    finally:
+        os.unlink(tmp_path)
+    # Return SVG directly; include metadata in headers
+    w, h = result["bbox_mm"]
+    meta = {
+        "thickness_mm": result["thickness_mm"],
+        "bends": result["bends"],
+        "blank_w_mm": round(w, 1),
+        "blank_h_mm": round(h, 1),
+    }
+    import json
+    return Response(
+        content=result["svg"].encode("utf-8"),
+        media_type="image/svg+xml",
+        headers={"X-Flat-Pattern-Meta": json.dumps(meta)},
+    )

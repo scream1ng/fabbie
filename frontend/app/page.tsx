@@ -32,6 +32,15 @@ export function Home() {
   const [exportCm, setExportCm] = useState(2.6);
   const [exportDpi, setExportDpi] = useState(300);
   const [analysis, setAnalysis] = useState<PartAnalysis | null>(null);
+  const [flatSvg, setFlatSvg] = useState<string | null>(null);
+  const [flatMeta, setFlatMeta] = useState<{
+    thickness_mm: number;
+    bends: number;
+    blank_w_mm: number;
+    blank_h_mm: number;
+  } | null>(null);
+  const [flatLoading, setFlatLoading] = useState(false);
+  const [kFactor, setKFactor] = useState(0.33);
   const [costParams, setCostParams] = useState<CostParams>({
     moq: 1,
     materialKey: "Mild Steel",
@@ -379,6 +388,42 @@ export function Home() {
     }
   }, [exportCm, exportDpi, file, linePx, partName]);
 
+  const fetchFlatPattern = useCallback(async () => {
+    if (!file) return;
+    setFlatLoading(true);
+    setFlatSvg(null);
+    setFlatMeta(null);
+    const form = new FormData();
+    form.append("file", file);
+    try {
+      const res = await fetch(`/api/flat-pattern?k_factor=${kFactor}`, {
+        method: "POST",
+        body: form,
+      });
+      if (!res.ok) throw new Error(`Flat pattern: ${res.status}`);
+      const metaStr = res.headers.get("X-Flat-Pattern-Meta");
+      const meta = metaStr ? JSON.parse(metaStr) : null;
+      const svgText = await res.text();
+      setFlatMeta(meta);
+      setFlatSvg(svgText);
+    } catch (err) {
+      setErrorMsg(String(err instanceof Error ? err.message : err));
+    } finally {
+      setFlatLoading(false);
+    }
+  }, [file, kFactor]);
+
+  const downloadFlatSvg = useCallback(() => {
+    if (!flatSvg) return;
+    const blob = new Blob([flatSvg], { type: "image/svg+xml" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${partName.trim() || "part"}_flat.svg`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [flatSvg, partName]);
+
   const reset = () => {
     cleanup();
     setFile(null);
@@ -386,6 +431,8 @@ export function Home() {
     setErrorMsg("");
     setPartName("");
     setAnalysis(null);
+    setFlatSvg(null);
+    setFlatMeta(null);
   };
 
   const showDrop = status === "idle" || status === "error";
@@ -537,6 +584,36 @@ export function Home() {
                 >
                   Load new file
                 </button>
+              </div>
+
+              <div className="flex items-end gap-2">
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs text-zinc-500">K-factor</label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={0.5}
+                    step={0.01}
+                    value={kFactor}
+                    onChange={(e) => setKFactor(Number(e.target.value))}
+                    className="w-20 rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm font-mono text-zinc-200"
+                  />
+                </div>
+                <button
+                  onClick={fetchFlatPattern}
+                  disabled={flatLoading}
+                  className="rounded-lg bg-emerald-700 px-5 py-2 text-sm font-medium transition-colors hover:bg-emerald-600 disabled:opacity-50"
+                >
+                  {flatLoading ? "Unfolding..." : "Flat Pattern"}
+                </button>
+                {flatSvg && (
+                  <button
+                    onClick={downloadFlatSvg}
+                    className="rounded-lg bg-zinc-800 px-4 py-2 text-sm text-zinc-300 transition-colors hover:bg-zinc-700"
+                  >
+                    Download SVG
+                  </button>
+                )}
               </div>
             </>
           )}
@@ -754,6 +831,48 @@ export function Home() {
           </div>
         )}
       </div>
+      {/* Flat pattern panel */}
+      {showViewer && (flatSvg || flatLoading) && (
+        <div className="w-full max-w-4xl rounded-xl border border-zinc-700 p-4 flex flex-col gap-3">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-zinc-200">Flat Pattern</h2>
+            {flatMeta && (
+              <div className="flex gap-4 text-xs text-zinc-400">
+                <span>
+                  <span className="text-zinc-500">Blank: </span>
+                  {flatMeta.blank_w_mm} × {flatMeta.blank_h_mm} mm
+                </span>
+                <span>
+                  <span className="text-zinc-500">t: </span>
+                  {flatMeta.thickness_mm} mm
+                </span>
+                <span>
+                  <span className="text-zinc-500">Bends: </span>
+                  {flatMeta.bends}
+                </span>
+              </div>
+            )}
+          </div>
+
+          {flatLoading && (
+            <div className="flex items-center gap-3 text-sm text-zinc-400 py-8 justify-center">
+              <svg className="h-5 w-5 animate-spin" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 0 1 8-8v8H4z" />
+              </svg>
+              Generating flat pattern...
+            </div>
+          )}
+
+          {flatSvg && !flatLoading && (
+            <div
+              className="rounded-lg bg-white overflow-auto"
+              style={{ maxHeight: 480 }}
+              dangerouslySetInnerHTML={{ __html: flatSvg }}
+            />
+          )}
+        </div>
+      )}
     </main>
   );
 }
