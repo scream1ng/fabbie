@@ -90,7 +90,7 @@ async def convert(
     file: UploadFile = File(...),
     line_px: int = Query(3, ge=1, le=20),
     view: str = Query("isometric"),
-    label_cm: float = Query(26.0, ge=5.0, le=100.0),
+    label_cm: float = Query(26.0, ge=1.0, le=100.0),
     dpi: int = Query(300, ge=72, le=1200),
     eye_x: Optional[float] = Query(None),
     eye_y: Optional[float] = Query(None),
@@ -155,6 +155,16 @@ async def analyse(file: UploadFile = File(...)):
     tmp_path = _save_upload(data)
     try:
         result = analyse_part(tmp_path)
+        try:
+            fp = unfold(tmp_path, k_factor=0.33)
+            w, h = fp["bbox_mm"]
+            result["flat_blank_w_mm"] = round(w, 1)
+            result["flat_blank_h_mm"] = round(h, 1)
+            result["cut_perimeter_mm"] = round(2 * (w + h) + sum(
+                3.14159 * d for d in result.get("holes_mm", [])
+            ), 1)
+        except Exception:
+            pass
     except ValueError as e:
         raise HTTPException(422, str(e))
     except Exception as e:

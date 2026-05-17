@@ -1,13 +1,16 @@
 // AUD sheet-metal fabrication cost engine — hardcoded defaults
 
 export interface PartAnalysis {
-  bbox_mm: [number, number, number]; // [W, H, T]
+  bbox_mm: [number, number, number]; // 3-D bounding box [W, H, D]
   thickness_mm: number;
   cut_perimeter_mm: number;
   hole_count: number;
   bend_count: number;
   flat_area_mm2: number;
   flat_pattern_area_mm2: number;
+  flat_blank_w_mm: number; // unfolded blank width
+  flat_blank_h_mm: number; // unfolded blank height
+  holes_mm: number[];
 }
 
 export interface Material {
@@ -103,7 +106,8 @@ export function calculateCost(
   const mat = MATERIALS[materialKey] ?? MATERIALS["Mild Steel"];
   const sheet = STANDARD_SHEETS[sheetIndex] ?? STANDARD_SHEETS[0];
   const thickness = thicknessOverrideMm ?? analysis.thickness_mm;
-  const [blankW, blankH] = analysis.bbox_mm;
+  const blankW = analysis.flat_blank_w_mm > 0 ? analysis.flat_blank_w_mm : analysis.bbox_mm[0];
+  const blankH = analysis.flat_blank_h_mm > 0 ? analysis.flat_blank_h_mm : analysis.bbox_mm[1];
 
   // ── Sheet yield ───────────────────────────────────────────
   const partsPerRow = Math.max(1, Math.floor(sheet.w / blankW));

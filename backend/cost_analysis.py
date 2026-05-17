@@ -1,3 +1,4 @@
+import math
 import re
 
 
@@ -100,13 +101,26 @@ def analyse_part(path: str) -> dict:
     min_bend_r = min(bend_inner_radii) if bend_inner_radii else (t * 2)
     hole_diameters = [round(r * 2, 2) for r in unpaired if r > min_bend_r * 2.0]
 
+    # ── 3-D bounding box from all vertices ───────────────────────────────────
+    all_pts = list(pt.values())
+    if all_pts:
+        xs = [p[0] * scale for p in all_pts]
+        ys = [p[1] * scale for p in all_pts]
+        zs = [p[2] * scale for p in all_pts]
+        dims = sorted([max(xs) - min(xs), max(ys) - min(ys), max(zs) - min(zs)], reverse=True)
+        bbox_mm = [round(dims[0], 1), round(dims[1], 1), round(dims[2], 1)]
+    else:
+        bbox_mm = [0.0, 0.0, round(thickness_mm, 1)]
+
     return {
         "thickness_mm": round(thickness_mm, 1),
         "bend_count": len(bend_inner_radii),
         "hole_count": len(hole_diameters),
         "holes_mm": sorted(hole_diameters),
         "bend_radii_mm": sorted(bend_inner_radii, reverse=True),
-        "bbox_mm": [0.0, 0.0, round(thickness_mm, 1)],
+        "bbox_mm": bbox_mm,
         "flat_area_mm2": 0.0,
         "cut_perimeter_mm": 0.0,
+        "flat_blank_w_mm": 0.0,
+        "flat_blank_h_mm": 0.0,
     }

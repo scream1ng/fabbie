@@ -18,11 +18,12 @@ import {
 
 type Status = "idle" | "loading" | "viewing" | "exporting" | "error";
 
-function cmDpiToPx(cm: number, dpi: number) {
-  return Math.round((cm / 2.54) * dpi);
-}
+const MAX_EXPORT_PX = 4096;
+const MAX_VIEWER_SEGMENTS = 60000;
+const EXPORT_SUPERSAMPLE = 4;
 
-export function Home() {
+
+function Home() {
   const [file, setFile] = useState<File | null>(null);
   const [dragging, setDragging] = useState(false);
   const [linePx, setLinePx] = useState(3);
@@ -32,15 +33,6 @@ export function Home() {
   const [exportCm, setExportCm] = useState(2.6);
   const [exportDpi, setExportDpi] = useState(300);
   const [analysis, setAnalysis] = useState<PartAnalysis | null>(null);
-  const [flatSvg, setFlatSvg] = useState<string | null>(null);
-  const [flatMeta, setFlatMeta] = useState<{
-    thickness_mm: number;
-    bends: number;
-    blank_w_mm: number;
-    blank_h_mm: number;
-  } | null>(null);
-  const [flatLoading, setFlatLoading] = useState(false);
-  const [kFactor, setKFactor] = useState(0.33);
   const [costParams, setCostParams] = useState<CostParams>({
     moq: 1,
     materialKey: "Mild Steel",
@@ -160,10 +152,14 @@ export function Home() {
         const width = mount.clientWidth || 520;
         const height = mount.clientHeight || 520;
 
-        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        const renderer = new THREE.WebGLRenderer({
+          antialias: true,
+          alpha: false,
+        });
         renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
         renderer.setSize(width, height);
         renderer.setClearColor(0xffffff, 1);
+        renderer.outputColorSpace = THREE.SRGBColorSpace;
         mount.appendChild(renderer.domElement);
         rendererRef.current = renderer;
 
@@ -215,6 +211,9 @@ export function Home() {
               side: THREE.FrontSide,
               depthWrite: true,
               depthTest: true,
+              polygonOffset: true,
+              polygonOffsetFactor: 1,
+              polygonOffsetUnits: 1,
             }),
           );
           depthMesh.renderOrder = 0;
@@ -223,7 +222,7 @@ export function Home() {
           const whiteMesh = new THREE.Mesh(
             geo,
             new THREE.MeshBasicMaterial({
-              color: 0xf0f0f0,
+              color: 0xffffff,
               side: THREE.FrontSide,
               depthWrite: false,
               polygonOffset: true,
@@ -235,8 +234,16 @@ export function Home() {
           scene.add(whiteMesh);
 
           const positions: number[] = [];
+          let segmentCount = 0;
           for (const polyline of edgesData) {
             for (let i = 0; i < polyline.length - 1; i += 1) {
+              segmentCount += 1;
+              if (segmentCount > MAX_VIEWER_SEGMENTS) {
+                geo.dispose();
+                setErrorMsg("Too many model edges to render. Try a simpler export view or reduce edge detail.");
+                setStatus("error");
+                return;
+              }
               const [x1, y1, z1] = polyline[i];
               const [x2, y2, z2] = polyline[i + 1];
               positions.push(
@@ -258,6 +265,8 @@ export function Home() {
               linewidth: linePx,
               worldUnits: false,
               depthTest: true,
+              depthWrite: false,
+              depthFunc: THREE.LessEqualDepth,
               resolution: new THREE.Vector2(width, height),
             });
             linMatRef.current = lineMaterial;
@@ -327,21 +336,29 @@ export function Home() {
   );
 
   const exportJpg = useCallback(async () => {
+    if (!file) return;
     const scene = sceneRef.current;
     const camera = cameraRef.current;
+    const controls = controlsRef.current;
     if (!scene || !camera) return;
 
     setStatus("exporting");
     setErrorMsg("");
 
-    const px = cmDpiToPx(exportCm, exportDpi);
-    const viewportWidth = mountRef.current?.clientWidth ?? 520;
-    const viewportHeight = mountRef.current?.clientHeight ?? 520;
     let exportRenderer: THREE.WebGLRenderer | null = null;
-
+    let previousLineWidth: number | null = null;
     try {
-      controlsRef.current?.update();
-      camera.updateMatrixWorld(true);
+      const exportPx = Math.round((exportCm / 2.54) * exportDpi);
+      if (!Number.isFinite(exportPx) || exportPx < 1) {
+        throw new Error("Export size and DPI must produce a valid image");
+      }
+      if (exportPx > MAX_EXPORT_PX) {
+        throw new Error(`Export is ${exportPx}px. Keep the longest side at ${MAX_EXPORT_PX}px or less.`);
+      }
+
+      controls?.update();
+      const renderScale = Math.max(1, Math.min(EXPORT_SUPERSAMPLE, Math.floor(MAX_EXPORT_PX / exportPx)));
+      const renderPx = exportPx * renderScale;
 
       exportRenderer = new THREE.WebGLRenderer({
         antialias: true,
@@ -349,80 +366,67 @@ export function Home() {
         preserveDrawingBuffer: true,
       });
       exportRenderer.setPixelRatio(1);
-      exportRenderer.setSize(px, px, false);
+      exportRenderer.setSize(renderPx, renderPx, false);
       exportRenderer.setClearColor(0xffffff, 1);
       exportRenderer.outputColorSpace = THREE.SRGBColorSpace;
-
-      scene.traverse((obj) => {
-        if ((obj as { isLineSegments2?: boolean }).isLineSegments2) {
-          const material = (obj as LineSegments2).material as LineMaterial;
-          material.resolution.set(px, px);
-        }
-      });
 
       const exportCamera = camera.clone() as THREE.PerspectiveCamera;
       exportCamera.aspect = 1;
       exportCamera.updateProjectionMatrix();
+      if (linMatRef.current) {
+        previousLineWidth = linMatRef.current.linewidth;
+        linMatRef.current.linewidth = linePx * renderScale;
+        linMatRef.current.resolution.set(renderPx, renderPx);
+      }
       exportRenderer.render(scene, exportCamera);
 
-      const dataUrl = exportRenderer.domElement.toDataURL("image/jpeg", 1);
-      const name = partName.trim() || file?.name.replace(/\.[^.]+$/, "") || "part";
-      const link = document.createElement("a");
-      link.href = dataUrl;
-      link.download = `${name}_label.jpg`;
-      link.click();
+      const blob = await new Promise<Blob>((resolve, reject) => {
+        const canvas = document.createElement("canvas");
+        canvas.width = exportPx;
+        canvas.height = exportPx;
+        const ctx = canvas.getContext("2d");
+        if (!ctx || !exportRenderer) {
+          reject(new Error("Could not prepare JPG canvas"));
+          return;
+        }
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "high";
+        ctx.drawImage(exportRenderer.domElement, 0, 0, exportPx, exportPx);
+        canvas.toBlob(
+          (nextBlob) => {
+            if (nextBlob) {
+              resolve(nextBlob);
+            } else {
+              reject(new Error("Could not encode JPG"));
+            }
+          },
+          "image/jpeg",
+          0.98,
+        );
+      });
 
+      const url = URL.createObjectURL(blob);
+      const name = partName.trim() || file.name.replace(/\.[^.]+$/, "");
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${name}.jpg`;
+      a.click();
+      URL.revokeObjectURL(url);
       setStatus("viewing");
     } catch (err) {
       setErrorMsg(String(err instanceof Error ? err.message : err));
-      setStatus(sceneRef.current ? "viewing" : "error");
+      setStatus("viewing");
     } finally {
-      scene.traverse((obj) => {
-        if ((obj as { isLineSegments2?: boolean }).isLineSegments2) {
-          const material = (obj as LineSegments2).material as LineMaterial;
-          material.resolution.set(viewportWidth, viewportHeight);
-          material.linewidth = linePx;
-        }
-      });
+      const mount = mountRef.current;
+      if (linMatRef.current && previousLineWidth !== null) {
+        linMatRef.current.linewidth = previousLineWidth;
+      }
+      if (mount) {
+        linMatRef.current?.resolution.set(mount.clientWidth || 520, mount.clientHeight || 520);
+      }
       exportRenderer?.dispose();
     }
   }, [exportCm, exportDpi, file, linePx, partName]);
-
-  const fetchFlatPattern = useCallback(async () => {
-    if (!file) return;
-    setFlatLoading(true);
-    setFlatSvg(null);
-    setFlatMeta(null);
-    const form = new FormData();
-    form.append("file", file);
-    try {
-      const res = await fetch(`/api/flat-pattern?k_factor=${kFactor}`, {
-        method: "POST",
-        body: form,
-      });
-      if (!res.ok) throw new Error(`Flat pattern: ${res.status}`);
-      const metaStr = res.headers.get("X-Flat-Pattern-Meta");
-      const meta = metaStr ? JSON.parse(metaStr) : null;
-      const svgText = await res.text();
-      setFlatMeta(meta);
-      setFlatSvg(svgText);
-    } catch (err) {
-      setErrorMsg(String(err instanceof Error ? err.message : err));
-    } finally {
-      setFlatLoading(false);
-    }
-  }, [file, kFactor]);
-
-  const downloadFlatSvg = useCallback(() => {
-    if (!flatSvg) return;
-    const blob = new Blob([flatSvg], { type: "image/svg+xml" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${partName.trim() || "part"}_flat.svg`;
-    a.click();
-    URL.revokeObjectURL(url);
-  }, [flatSvg, partName]);
 
   const reset = () => {
     cleanup();
@@ -431,21 +435,14 @@ export function Home() {
     setErrorMsg("");
     setPartName("");
     setAnalysis(null);
-    setFlatSvg(null);
-    setFlatMeta(null);
   };
 
   const showDrop = status === "idle" || status === "error";
   const showViewer = status === "viewing" || status === "exporting";
 
   return (
-    <main
-      className={[
-        "min-h-screen flex flex-col p-6 gap-5",
-        showViewer ? "items-start" : "items-center justify-center",
-      ].join(" ")}
-    >
-      <div className={showViewer ? "" : "text-center"}>
+    <main className={`min-h-screen flex flex-col items-center p-6 gap-5 ${showViewer ? "justify-start" : "justify-center"}`}>
+      <div className="text-center">
         <h1 className="text-2xl font-bold tracking-tight">STEP to Label</h1>
         <p className="mt-1 text-sm text-zinc-400">
           Rotate to pick a view, then export a clean hidden-line JPG.
@@ -503,7 +500,7 @@ export function Home() {
       {errorMsg && <p className="max-w-xs text-center text-sm text-red-400">{errorMsg}</p>}
 
       {/* Two-column layout: mountRef always in DOM, hidden when not viewing */}
-      <div className={`flex gap-6 items-start w-full ${showViewer ? "" : "hidden"}`}>
+      <div className={`flex gap-6 items-start ${showViewer ? "" : "hidden"}`}>
 
         {/* ── Left column: viewer + export controls ── */}
         <div className="flex flex-col gap-3 flex-shrink-0" style={{ width: 520 }}>
@@ -519,18 +516,7 @@ export function Home() {
                 Left drag to rotate · Right drag to pan · Scroll to zoom
               </p>
 
-              <div className="flex flex-col gap-1">
-                <label className="text-xs text-zinc-500">Part name</label>
-                <input
-                  type="text"
-                  value={partName}
-                  onChange={(e) => setPartName(e.target.value)}
-                  placeholder="e.g. BRACKET-001"
-                  className="rounded border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm font-mono text-zinc-200 focus:border-blue-500 focus:outline-none"
-                />
-              </div>
-
-              <label className="flex items-center gap-3 text-sm text-zinc-400">
+              <label className="flex items-center justify-center gap-3 text-sm text-zinc-400">
                 Line thickness
                 <input
                   type="range"
@@ -543,78 +529,59 @@ export function Home() {
                 <span className="w-4 text-zinc-200">{linePx}</span>
               </label>
 
-              <div className="flex gap-3">
-                <div className="flex flex-col gap-1">
-                  <label className="text-xs text-zinc-500">Export size (mm)</label>
-                  <input
-                    type="number"
-                    min={5}
-                    max={1000}
-                    value={Math.round(exportCm * 10)}
-                    onChange={(e) => setExportCm(Number(e.target.value) / 10)}
-                    className="w-20 rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm font-mono text-zinc-200"
-                  />
-                </div>
-                <div className="flex flex-col gap-1">
-                  <label className="text-xs text-zinc-500">DPI</label>
-                  <input
-                    type="number"
-                    min={72}
-                    max={1200}
-                    value={exportDpi}
-                    onChange={(e) => setExportDpi(Number(e.target.value))}
-                    className="w-20 rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm font-mono text-zinc-200"
-                  />
-                </div>
-              </div>
-
-              <div className="flex gap-2">
-                <button
-                  onClick={exportJpg}
-                  disabled={status === "exporting"}
-                  className="rounded-lg bg-blue-600 px-5 py-2 text-sm font-medium transition-colors hover:bg-blue-500 disabled:opacity-50"
-                >
-                  {status === "exporting"
-                    ? "Generating..."
-                    : `Export JPG (${Math.round(exportCm * 10)}×${Math.round(exportCm * 10)} mm @ ${exportDpi} dpi)`}
-                </button>
-                <button
-                  onClick={reset}
-                  className="rounded-lg bg-zinc-800 px-4 py-2 text-sm text-zinc-300 transition-colors hover:bg-zinc-700"
-                >
-                  Load new file
-                </button>
-              </div>
-
-              <div className="flex items-end gap-2">
-                <div className="flex flex-col gap-1">
-                  <label className="text-xs text-zinc-500">K-factor</label>
-                  <input
-                    type="number"
-                    min={0}
-                    max={0.5}
-                    step={0.01}
-                    value={kFactor}
-                    onChange={(e) => setKFactor(Number(e.target.value))}
-                    className="w-20 rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm font-mono text-zinc-200"
-                  />
-                </div>
-                <button
-                  onClick={fetchFlatPattern}
-                  disabled={flatLoading}
-                  className="rounded-lg bg-emerald-700 px-5 py-2 text-sm font-medium transition-colors hover:bg-emerald-600 disabled:opacity-50"
-                >
-                  {flatLoading ? "Unfolding..." : "Flat Pattern"}
-                </button>
-                {flatSvg && (
+              <div className="rounded-lg border border-zinc-800 bg-zinc-900/70 p-2.5">
+                <div className="grid grid-cols-[minmax(0,1fr)_4.25rem_3.75rem_4.25rem_3rem] items-end gap-2">
+                  <div className="flex flex-col gap-1">
+                    <label className="text-xs text-zinc-500">Part name</label>
+                    <input
+                      type="text"
+                      value={partName}
+                      onChange={(e) => setPartName(e.target.value)}
+                      placeholder="BRACKET-001"
+                      className="h-9 rounded border border-zinc-700 bg-zinc-950 px-3 text-sm font-mono text-zinc-200 focus:border-blue-500 focus:outline-none"
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-xs text-zinc-500">mm</label>
+                    <input
+                      type="number"
+                      min={5}
+                      max={1000}
+                      value={Math.round(exportCm * 10)}
+                      onChange={(e) => setExportCm(Number(e.target.value) / 10)}
+                      className="h-9 rounded border border-zinc-700 bg-zinc-950 px-1.5 text-sm font-mono text-zinc-200"
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-xs text-zinc-500">DPI</label>
+                    <input
+                      type="number"
+                      min={72}
+                      max={1200}
+                      value={exportDpi}
+                      onChange={(e) => setExportDpi(Number(e.target.value))}
+                      className="h-9 rounded border border-zinc-700 bg-zinc-950 px-1.5 text-sm font-mono text-zinc-200"
+                    />
+                  </div>
                   <button
-                    onClick={downloadFlatSvg}
-                    className="rounded-lg bg-zinc-800 px-4 py-2 text-sm text-zinc-300 transition-colors hover:bg-zinc-700"
+                    onClick={exportJpg}
+                    disabled={status === "exporting"}
+                    className="h-9 rounded bg-blue-600 px-3 text-sm font-medium text-white transition-colors hover:bg-blue-500 disabled:opacity-50"
                   >
-                    Download SVG
+                    {status === "exporting" ? "..." : "Export"}
                   </button>
-                )}
+                  <button
+                    onClick={reset}
+                    className="h-9 rounded border border-zinc-700 bg-zinc-800 px-2 text-sm text-zinc-300 transition-colors hover:bg-zinc-700"
+                  >
+                    New
+                  </button>
+                </div>
+                <div className="mt-2 text-xs text-zinc-500">
+                  {Math.round((exportCm / 2.54) * exportDpi)} x {Math.round((exportCm / 2.54) * exportDpi)} px JPG
+                </div>
               </div>
+
             </>
           )}
         </div>
@@ -626,8 +593,11 @@ export function Home() {
 
             <div className="rounded-lg bg-zinc-900 p-3 text-xs text-zinc-400 flex flex-col gap-1">
               <div>
-                <span className="text-zinc-500">Flat Blank: </span>
-                {analysis.bbox_mm[0]} × {analysis.bbox_mm[1]} mm ·{" "}
+                <span className="text-zinc-500">Flat blank: </span>
+                {analysis.flat_blank_w_mm > 0
+                  ? `${analysis.flat_blank_w_mm} × ${analysis.flat_blank_h_mm} mm`
+                  : `${analysis.bbox_mm[0]} × ${analysis.bbox_mm[1]} mm (3D bbox)`}
+                {" · "}
                 <span className="text-zinc-500">t </span>
                 {analysis.thickness_mm} mm
               </div>
@@ -635,15 +605,13 @@ export function Home() {
                 <span>{analysis.bend_count} bend{analysis.bend_count !== 1 ? "s" : ""}</span>
                 <span>·</span>
                 <span>{analysis.hole_count} hole{analysis.hole_count !== 1 ? "s" : ""}</span>
-                <span>·</span>
-                <span>{(analysis.cut_perimeter_mm / 1000).toFixed(2)} m cut</span>
+                {analysis.cut_perimeter_mm > 0 && (
+                  <>
+                    <span>·</span>
+                    <span>{(analysis.cut_perimeter_mm / 1000).toFixed(2)} m cut</span>
+                  </>
+                )}
               </div>
-              {analysis.flat_pattern_area_mm2 > 0 && (
-                <div>
-                  <span className="text-zinc-500">Flat Area: </span>
-                  {analysis.flat_pattern_area_mm2.toFixed(0)} mm²
-                </div>
-              )}
             </div>
 
             <div className="grid grid-cols-2 gap-3">
@@ -831,48 +799,6 @@ export function Home() {
           </div>
         )}
       </div>
-      {/* Flat pattern panel */}
-      {showViewer && (flatSvg || flatLoading) && (
-        <div className="w-full max-w-4xl rounded-xl border border-zinc-700 p-4 flex flex-col gap-3">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-zinc-200">Flat Pattern</h2>
-            {flatMeta && (
-              <div className="flex gap-4 text-xs text-zinc-400">
-                <span>
-                  <span className="text-zinc-500">Blank: </span>
-                  {flatMeta.blank_w_mm} × {flatMeta.blank_h_mm} mm
-                </span>
-                <span>
-                  <span className="text-zinc-500">t: </span>
-                  {flatMeta.thickness_mm} mm
-                </span>
-                <span>
-                  <span className="text-zinc-500">Bends: </span>
-                  {flatMeta.bends}
-                </span>
-              </div>
-            )}
-          </div>
-
-          {flatLoading && (
-            <div className="flex items-center gap-3 text-sm text-zinc-400 py-8 justify-center">
-              <svg className="h-5 w-5 animate-spin" viewBox="0 0 24 24" fill="none">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 0 1 8-8v8H4z" />
-              </svg>
-              Generating flat pattern...
-            </div>
-          )}
-
-          {flatSvg && !flatLoading && (
-            <div
-              className="rounded-lg bg-white overflow-auto"
-              style={{ maxHeight: 480 }}
-              dangerouslySetInnerHTML={{ __html: flatSvg }}
-            />
-          )}
-        </div>
-      )}
     </main>
   );
 }

@@ -16,8 +16,9 @@ from OCP.HLRBRep import HLRBRep_Algo, HLRBRep_HLRToShape
 from OCP.IFSelect import IFSelect_RetDone
 from OCP.STEPControl import STEPControl_Reader
 from OCP.StlAPI import StlAPI_Writer
-from OCP.TopAbs import TopAbs_EDGE
-from OCP.TopExp import TopExp_Explorer
+from OCP.BRep import BRep_Tool
+from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
+from OCP.TopExp import TopExp, TopExp_Explorer
 from OCP.TopoDS import TopoDS, TopoDS_Edge
 from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
 
@@ -46,6 +47,8 @@ PADDING_FRAC = 0.08
 _S2 = math.sqrt(2)
 _S3 = math.sqrt(3)
 Vec3 = Tuple[float, float, float]
+MAX_EDGE_POLYLINES = 2500
+MAX_EDGE_POINTS = 40000
 
 VIEWS: dict[str, Tuple[Vec3, Vec3]] = {
     "isometric": ((1 / _S3, 1 / _S3, 1 / _S3), (1 / _S2, -1 / _S2, 0.0)),
@@ -205,17 +208,32 @@ def polylines_to_jpg(
 
 
 def step_to_edges_json(path: str) -> list:
-    """Return all BRep edges as 3D polylines, including smooth/fillet edges."""
+    """Return BRep edges as 3D polylines, including smooth/tangent radius edges."""
     shape = load_step(path)
+
     result = []
+    total_points = 0
     exp = TopExp_Explorer(shape, TopAbs_EDGE)
     while exp.More():
+        if len(result) >= MAX_EDGE_POLYLINES or total_points >= MAX_EDGE_POINTS:
+            logger.warning(
+                "step_to_edges_json capped at %d polylines / %d points",
+                len(result),
+                total_points,
+            )
+            break
         curr = exp.Current()
         if curr.IsNull():
             exp.Next()
             continue
         try:
             edge = _as_edge(curr)
+
+            # Skip degenerated edges
+            if BRep_Tool.Degenerated_s(edge):
+                exp.Next()
+                continue
+
             curve = BRepAdaptor_Curve(edge)
             first = curve.FirstParameter()
             last = curve.LastParameter()
@@ -223,7 +241,7 @@ def step_to_edges_json(path: str) -> list:
                 exp.Next()
                 continue
             disc = GCPnts_TangentialDeflection()
-            disc.Initialize(curve, 0.1, 0.01)
+            disc.Initialize(curve, 0.3, 0.04)
             count = disc.NbPoints()
             if count < 2:
                 exp.Next()
@@ -236,6 +254,7 @@ def step_to_edges_json(path: str) -> list:
                     pts.append([round(x, 3), round(y, 3), round(z, 3)])
             if len(pts) >= 2:
                 result.append(pts)
+                total_points += len(pts)
         except Exception as e:
             logger.warning("Edge skip: %s", e)
         exp.Next()
@@ -258,9 +277,9 @@ def step_to_jpg(
     shape = load_step(path)
 
     if eye is not None and right is not None:
-        n = _norm(eye)
-        vx = _norm(right)
         origin = target if target is not None else (0.0, 0.0, 0.0)
+        n = _norm((eye[0] - origin[0], eye[1] - origin[1], eye[2] - origin[2]))
+        vx = _norm(right)
     else:
         if view not in VIEWS:
             raise ValueError(f"Unknown view '{view}'")
