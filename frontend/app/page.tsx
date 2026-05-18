@@ -15,6 +15,11 @@ import {
   MATERIALS,
   STANDARD_SHEETS,
 } from "./costing";
+import {
+  type BomTreeRow,
+  buildBomTree,
+  buildProcessStages,
+} from "./bom";
 
 type Status = "idle" | "loading" | "viewing" | "exporting" | "error";
 
@@ -33,6 +38,13 @@ function Home() {
   const [exportCm, setExportCm] = useState(2.6);
   const [exportDpi, setExportDpi] = useState(300);
   const [analysis, setAnalysis] = useState<PartAnalysis | null>(null);
+  const [bomPartNumber, setBomPartNumber] = useState("");
+  const [bomDescription, setBomDescription] = useState("");
+  const [materialNumber, setMaterialNumber] = useState("MAT-001");
+  const [materialDescription, setMaterialDescription] = useState("MILD STEEL");
+  const [finishCode, setFinishCode] = useState("E");
+  const [finishLabel, setFinishLabel] = useState("E-COAT");
+  const [editableBomRows, setEditableBomRows] = useState<BomTreeRow[]>([]);
   const [costParams, setCostParams] = useState<CostParams>({
     moq: 1,
     materialKey: "Mild Steel",
@@ -65,7 +77,43 @@ function Home() {
     () => (analysis ? calculateCost(analysis, costParams) : null),
     [analysis, costParams],
   );
+  const bomStages = useMemo(
+    () => buildProcessStages(costParams.processes, finishCode, finishLabel),
+    [costParams.processes, finishCode, finishLabel],
+  );
+  const generatedBomRows = useMemo(
+    () =>
+      buildBomTree({
+        partNumber: bomPartNumber,
+        description: bomDescription,
+        materialNumber,
+        materialDescription,
+        stages: bomStages,
+      }),
+    [bomDescription, bomPartNumber, bomStages, materialDescription, materialNumber],
+  );
+  const bomFlow = useMemo(() => {
+    if (editableBomRows.length === 0) {
+      return [];
+    }
 
+    const fg = editableBomRows[0];
+    const material = editableBomRows.at(-1);
+    if (!fg || !material) {
+      return [];
+    }
+
+    return [
+      material,
+      ...editableBomRows.slice(1, -1).reverse(),
+      fg,
+    ].map((row) => ({
+      id: row.id,
+      itemNumber: row.itemNumber,
+      description: row.description,
+      kind: row.kind,
+    }));
+  }, [editableBomRows]);
   const mountRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
@@ -122,6 +170,23 @@ function Home() {
       linMatRef.current.linewidth = linePx;
     }
   }, [linePx]);
+
+  useEffect(() => {
+    setEditableBomRows((previousRows) =>
+      generatedBomRows.map((row) => {
+        const existingRow = previousRows.find((candidate) => candidate.id === row.id);
+        if (!existingRow) {
+          return row;
+        }
+        return {
+          ...row,
+          depth: existingRow.depth,
+          itemNumber: existingRow.itemNumber,
+          description: existingRow.description,
+        };
+      }),
+    );
+  }, [generatedBomRows]);
 
   const loadMesh = useCallback(
     async (nextFile: File) => {
@@ -334,11 +399,16 @@ function Home() {
         setStatus("error");
         return;
       }
+      const nextBaseName = nextFile.name.replace(/\.[^.]+$/, "");
       setFile(nextFile);
-      setPartName(nextFile.name.replace(/\.[^.]+$/, ""));
+      setPartName(nextBaseName);
+      setBomPartNumber(nextBaseName);
+      setBomDescription(nextBaseName);
+      setMaterialNumber("MAT-001");
+      setMaterialDescription(costParams.materialKey.toUpperCase());
       loadMesh(nextFile);
     },
-    [loadMesh],
+    [costParams.materialKey, loadMesh],
   );
 
   const onDrop = useCallback(
@@ -453,6 +523,149 @@ function Home() {
     setErrorMsg("");
     setPartName("");
     setAnalysis(null);
+    setEditableBomRows([]);
+    setBomPartNumber("");
+    setBomDescription("");
+    setMaterialNumber("MAT-001");
+    setMaterialDescription("MILD STEEL");
+    setFinishCode("E");
+    setFinishLabel("E-COAT");
+  };
+
+  const formatBomLabel = (value: string) =>
+    value
+      .toLowerCase()
+      .replace(/\b\w/g, (char) => char.toUpperCase());
+
+  const getProcessCode = (row: BomTreeRow) => row.id.replace(/^stage-/, "").toUpperCase();
+
+  const syncProcessItemNumbers = (rows: BomTreeRow[]) => {
+    const fgRow = rows.find((row) => row.id === "fg");
+    if (!fgRow) {
+      return rows;
+    }
+
+    const processCodes: string[] = [];
+    return rows.map((row) => {
+      if (row.kind !== "process") {
+        return row;
+      }
+
+      const nextDepth = Math.max(1, row.depth);
+      processCodes.length = Math.max(0, nextDepth - 1);
+      processCodes[nextDepth - 1] = getProcessCode(row);
+      const suffix = processCodes
+        .slice(0, nextDepth)
+        .filter(Boolean)
+        .reverse()
+        .join("");
+
+      return {
+        ...row,
+        itemNumber: `${fgRow.itemNumber}${suffix}`,
+      };
+    });
+  };
+
+  const getBomTypeLabel = (row: BomTreeRow) => {
+    if (row.kind === "fg") return "FG";
+    if (row.kind === "material") return "Material";
+    if (row.id === "stage-L") return "Laser";
+    if (row.id === "stage-B") return "Bend";
+    if (row.id === "stage-W") return "Weld";
+    const normalizedFinishCode = finishCode.trim().toUpperCase().replace(/[^A-Z0-9]/g, "") || "F";
+    if (row.id === `stage-${normalizedFinishCode}`) {
+      return formatBomLabel(finishLabel.trim() || "FINISH");
+    }
+    const match = row.description.match(/\(([^)]+)\)\s*$/);
+    return formatBomLabel(match?.[1] ?? "PROCESS");
+  };
+
+  const updateBomRow = (id: string, field: "itemNumber" | "description", value: string) => {
+    const nextValue = field === "itemNumber" ? value.toUpperCase() : value;
+
+    if (id === "fg") {
+      if (field === "itemNumber") {
+        setBomPartNumber(nextValue);
+      } else {
+        setBomDescription(nextValue);
+      }
+    }
+
+    if (id === "material") {
+      if (field === "itemNumber") {
+        setMaterialNumber(nextValue);
+      } else {
+        setMaterialDescription(nextValue);
+      }
+    }
+
+    setEditableBomRows((rows) => {
+      const fgRow = rows.find((row) => row.id === "fg");
+
+      const nextRows = rows.map((row) => {
+        if (row.id === id) {
+          return { ...row, [field]: nextValue };
+        }
+
+        if (id === "fg" && row.kind === "process" && fgRow) {
+          if (field === "itemNumber") {
+            const suffix = row.itemNumber.startsWith(fgRow.itemNumber)
+              ? row.itemNumber.slice(fgRow.itemNumber.length)
+              : "";
+            return { ...row, itemNumber: `${nextValue}${suffix}` };
+          }
+
+          const match = row.description.match(/\(([^)]+)\)\s*$/);
+          const stageLabel = match?.[1] ?? "PROCESS";
+          return { ...row, description: `${nextValue} (${stageLabel})` };
+        }
+
+        return row;
+      });
+
+      if (id === "fg" && field === "itemNumber") {
+        return syncProcessItemNumbers(nextRows);
+      }
+
+      return nextRows;
+    });
+  };
+
+  const updateBomLevel = (id: string, value: string) => {
+    const parsedLevel = Number.parseInt(value, 10);
+    if (!Number.isFinite(parsedLevel)) {
+      return;
+    }
+
+    setEditableBomRows((rows) => {
+      const targetIndex = rows.findIndex((row) => row.id === id);
+      if (targetIndex === -1) {
+        return rows;
+      }
+
+      const nextLevel = Math.max(0, parsedLevel);
+      const currentLevel = rows[targetIndex].depth;
+      const levelDelta = nextLevel - currentLevel;
+      if (levelDelta === 0) {
+        return rows;
+      }
+
+      const nextRows = [...rows];
+      nextRows[targetIndex] = { ...nextRows[targetIndex], depth: nextLevel };
+
+      for (let index = targetIndex + 1; index < nextRows.length; index += 1) {
+        if (rows[index].depth <= currentLevel) {
+          break;
+        }
+        nextRows[index] = {
+          ...nextRows[index],
+          depth: Math.max(0, rows[index].depth + levelDelta),
+        };
+      }
+
+      return syncProcessItemNumbers(nextRows);
+    });
   };
 
   const showDrop = status === "idle" || status === "error";
@@ -522,438 +735,511 @@ function Home() {
 
       {errorMsg && <p className="max-w-xs text-center text-sm text-red-400">{errorMsg}</p>}
 
-      {/* Two-column layout: mountRef always in DOM, hidden when not viewing */}
-      <div className={`flex gap-6 items-start ${showViewer ? "" : "hidden"}`}>
+      <div className={`w-full max-w-[1120px] ${showViewer ? "" : "hidden"}`}>
+        <div className="flex flex-col gap-4">
+          <section className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
+            <div
+              ref={mountRef}
+              className="mx-auto aspect-square w-full max-w-[520px] overflow-hidden rounded-xl border border-zinc-700 bg-white"
+            />
 
-        {/* ── Left column: viewer + export controls ── */}
-        <div className="flex flex-col gap-3 flex-shrink-0" style={{ width: 520 }}>
-          <div
-            ref={mountRef}
-            className="overflow-hidden rounded-xl border border-zinc-700 bg-white"
-            style={{ width: 520, height: 520 }}
-          />
+            {showViewer && (
+              <div className="mt-4 flex flex-col gap-4">
+                <p className="text-center text-xs text-zinc-500">
+                  Left drag to rotate · Right drag to pan · Scroll to zoom
+                </p>
+
+                <div className="mx-auto flex w-full max-w-[520px] items-center justify-center gap-3 text-sm text-zinc-400">
+                  <label htmlFor="line-thickness">Line Thickness</label>
+                  <input
+                    id="line-thickness"
+                    type="range"
+                    min={1}
+                    max={10}
+                    value={linePx}
+                    onChange={(e) => setLinePx(Number(e.target.value))}
+                    className="w-32 accent-blue-500"
+                  />
+                  <span className="w-4 text-zinc-200">{linePx}</span>
+                </div>
+
+                <div className="rounded-lg border border-zinc-800 bg-zinc-900/70 p-3">
+                  <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_7rem_7rem_auto_auto] md:items-end">
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs text-zinc-500">Part Name</label>
+                      <input
+                        type="text"
+                        value={partName}
+                        onChange={(e) => setPartName(e.target.value)}
+                        placeholder="BRACKET-001…"
+                        className="h-10 rounded border border-zinc-700 bg-zinc-950 px-3 text-sm font-mono text-zinc-200 focus:border-blue-500 focus:outline-none"
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs text-zinc-500">Size (mm)</label>
+                      <input
+                        type="number"
+                        min={5}
+                        max={1000}
+                        value={Math.round(exportCm * 10)}
+                        onChange={(e) => setExportCm(Number(e.target.value) / 10)}
+                        className="h-10 rounded border border-zinc-700 bg-zinc-950 px-2 text-sm font-mono text-zinc-200"
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs text-zinc-500">DPI</label>
+                      <input
+                        type="number"
+                        min={72}
+                        max={1200}
+                        value={exportDpi}
+                        onChange={(e) => setExportDpi(Number(e.target.value))}
+                        className="h-10 rounded border border-zinc-700 bg-zinc-950 px-2 text-sm font-mono text-zinc-200"
+                      />
+                    </div>
+                    <button
+                      onClick={exportJpg}
+                      disabled={status === "exporting"}
+                      className="h-10 rounded bg-blue-600 px-4 text-sm font-medium text-white transition-colors hover:bg-blue-500 disabled:opacity-50"
+                    >
+                      {status === "exporting" ? "Exporting…" : "Export"}
+                    </button>
+                    <button
+                      onClick={reset}
+                      className="h-10 rounded border border-zinc-700 bg-zinc-800 px-4 text-sm text-zinc-300 transition-colors hover:bg-zinc-700"
+                    >
+                      New
+                    </button>
+                  </div>
+                  <div className="mt-3 text-xs text-zinc-500">
+                    {Math.round((exportCm / 2.54) * exportDpi)} × {Math.round((exportCm / 2.54) * exportDpi)} px JPG
+                  </div>
+                </div>
+              </div>
+            )}
+          </section>
 
           {showViewer && (
-            <>
-              <p className="text-center text-xs text-zinc-500">
-                Left drag to rotate · Right drag to pan · Scroll to zoom
-              </p>
-
-              <label className="flex items-center justify-center gap-3 text-sm text-zinc-400">
-                Line thickness
-                <input
-                  type="range"
-                  min={1}
-                  max={10}
-                  value={linePx}
-                  onChange={(e) => setLinePx(Number(e.target.value))}
-                  className="w-28 accent-blue-500"
-                />
-                <span className="w-4 text-zinc-200">{linePx}</span>
-              </label>
-
-              <div className="rounded-lg border border-zinc-800 bg-zinc-900/70 p-2.5">
-                <div className="grid grid-cols-[minmax(0,1fr)_4.25rem_3.75rem_4.25rem_3rem] items-end gap-2">
-                  <div className="flex flex-col gap-1">
-                    <label className="text-xs text-zinc-500">Part name</label>
-                    <input
-                      type="text"
-                      value={partName}
-                      onChange={(e) => setPartName(e.target.value)}
-                      placeholder="BRACKET-001"
-                      className="h-9 rounded border border-zinc-700 bg-zinc-950 px-3 text-sm font-mono text-zinc-200 focus:border-blue-500 focus:outline-none"
-                    />
+            analysis && costBreakdown ? (
+              <>
+                <section className="rounded-xl border border-zinc-800 bg-zinc-900/70 p-4 flex flex-col gap-4">
+                  <div>
+                    <div className="text-xs font-medium uppercase tracking-wide text-zinc-500">Costing</div>
+                    <div className="mt-1 text-xs text-zinc-500">Cost model and process settings.</div>
                   </div>
-                  <div className="flex flex-col gap-1">
-                    <label className="text-xs text-zinc-500">mm</label>
-                    <input
-                      type="number"
-                      min={5}
-                      max={1000}
-                      value={Math.round(exportCm * 10)}
-                      onChange={(e) => setExportCm(Number(e.target.value) / 10)}
-                      className="h-9 rounded border border-zinc-700 bg-zinc-950 px-1.5 text-sm font-mono text-zinc-200"
-                    />
-                  </div>
-                  <div className="flex flex-col gap-1">
-                    <label className="text-xs text-zinc-500">DPI</label>
-                    <input
-                      type="number"
-                      min={72}
-                      max={1200}
-                      value={exportDpi}
-                      onChange={(e) => setExportDpi(Number(e.target.value))}
-                      className="h-9 rounded border border-zinc-700 bg-zinc-950 px-1.5 text-sm font-mono text-zinc-200"
-                    />
-                  </div>
-                  <button
-                    onClick={exportJpg}
-                    disabled={status === "exporting"}
-                    className="h-9 rounded bg-blue-600 px-3 text-sm font-medium text-white transition-colors hover:bg-blue-500 disabled:opacity-50"
-                  >
-                    {status === "exporting" ? "..." : "Export"}
-                  </button>
-                  <button
-                    onClick={reset}
-                    className="h-9 rounded border border-zinc-700 bg-zinc-800 px-2 text-sm text-zinc-300 transition-colors hover:bg-zinc-700"
-                  >
-                    New
-                  </button>
-                </div>
-                <div className="mt-2 text-xs text-zinc-500">
-                  {Math.round((exportCm / 2.54) * exportDpi)} x {Math.round((exportCm / 2.54) * exportDpi)} px JPG
-                </div>
-              </div>
 
-            </>
-          )}
-        </div>
-
-        {/* ── Right column: cost panel ── */}
-        {showViewer && (
-          analysis && costBreakdown ? (
-            <div className="flex-1 min-w-[440px] max-w-lg rounded-xl border border-zinc-700 p-4 flex flex-col gap-4">
-              <h2 className="text-sm font-semibold text-zinc-200">Cost Estimate (AUD)</h2>
-
-              <div className="rounded-lg bg-zinc-900 p-3 text-xs text-zinc-400 flex flex-col gap-1">
-                <div>
-                  <span className="text-zinc-500">Flat blank: </span>
-                  {analysis.flat_blank_w_mm > 0
-                    ? `${analysis.flat_blank_w_mm} × ${analysis.flat_blank_h_mm} mm`
-                    : `${analysis.bbox_mm[0]} × ${analysis.bbox_mm[1]} mm (3D bbox)`}
-                  {" · "}
-                  <span className="text-zinc-500">t </span>
-                  {analysis.thickness_mm} mm
-                  {" · "}
-                  <span className="text-zinc-500">weight </span>
-                  {costBreakdown.blankMassKg.toFixed(3)} kg
-                </div>
-                <div className="flex gap-3">
-                  <span>{analysis.bend_count} bend{analysis.bend_count !== 1 ? "s" : ""}</span>
-                  <span>·</span>
-                  <span>{analysis.hole_count} hole{analysis.hole_count !== 1 ? "s" : ""}</span>
-                  {analysis.cut_perimeter_mm > 0 && (
-                    <>
+                  <div className="rounded-lg bg-zinc-900 p-3 text-xs text-zinc-400 flex flex-col gap-1">
+                    <div>
+                      <span className="text-zinc-500">Flat blank: </span>
+                      {analysis.flat_blank_w_mm > 0
+                        ? `${analysis.flat_blank_w_mm} × ${analysis.flat_blank_h_mm} mm`
+                        : `${analysis.bbox_mm[0]} × ${analysis.bbox_mm[1]} mm (3D bbox)`}
+                      {" · "}
+                      <span className="text-zinc-500">t </span>
+                      {analysis.thickness_mm} mm
+                      {" · "}
+                      <span className="text-zinc-500">weight </span>
+                      {costBreakdown.blankMassKg.toFixed(3)} kg
+                    </div>
+                    <div className="flex gap-3">
+                      <span>{analysis.bend_count} bend{analysis.bend_count !== 1 ? "s" : ""}</span>
                       <span>·</span>
-                      <span>{(analysis.cut_perimeter_mm / 1000).toFixed(2)} m cut</span>
-                    </>
-                  )}
-                </div>
-                <div>
-                  <span className="text-zinc-500">Sheet yield: </span>
-                  {costBreakdown.partsPerSheet} parts/sheet ·{" "}
-                  {costBreakdown.sheetsNeeded} sheet{costBreakdown.sheetsNeeded !== 1 ? "s" : ""} for {costParams.moq} pcs
-                </div>
-              </div>
+                      <span>{analysis.hole_count} hole{analysis.hole_count !== 1 ? "s" : ""}</span>
+                      {analysis.cut_perimeter_mm > 0 && (
+                        <>
+                          <span>·</span>
+                          <span>{(analysis.cut_perimeter_mm / 1000).toFixed(2)} m cut</span>
+                        </>
+                      )}
+                    </div>
+                    <div>
+                      <span className="text-zinc-500">Sheet yield: </span>
+                      {costBreakdown.partsPerSheet} parts/sheet ·{" "}
+                      {costBreakdown.sheetsNeeded} sheet{costBreakdown.sheetsNeeded !== 1 ? "s" : ""} for {costParams.moq} pcs
+                    </div>
+                  </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                <div className="flex flex-col gap-1">
-                  <label className="text-xs text-zinc-500">MOQ</label>
-                  <input
-                    type="number"
-                    min={1}
-                    value={costParams.moq}
-                    onChange={(e) =>
-                      setCostParams((p) => ({ ...p, moq: Math.max(1, Number(e.target.value)) }))
-                    }
-                    className="rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm font-mono text-zinc-200"
-                  />
-                </div>
-                <div className="flex flex-col gap-1">
-                  <label className="text-xs text-zinc-500">Material</label>
-                  <select
-                    value={costParams.materialKey}
-                    onChange={(e) => setCostParams((p) => ({ ...p, materialKey: e.target.value }))}
-                    className="rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm text-zinc-200"
-                  >
-                    {Object.keys(MATERIALS).map((k) => (
-                      <option key={k}>{k}</option>
-                    ))}
-                  </select>
-                </div>
-                <div className="flex flex-col gap-1">
-                  <label className="text-xs text-zinc-500">Sheet size</label>
-                  <select
-                    value={costParams.sheetIndex}
-                    onChange={(e) =>
-                      setCostParams((p) => ({ ...p, sheetIndex: Number(e.target.value) }))
-                    }
-                    className="rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm text-zinc-200"
-                  >
-                    {STANDARD_SHEETS.map((s, i) => (
-                      <option key={i} value={i}>
-                        {s.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div className="flex flex-col gap-1">
-                  <label className="text-xs text-zinc-500">Thickness (mm)</label>
-                  <input
-                    type="number"
-                    min={0.5}
-                    step={0.1}
-                    value={costParams.thicknessOverrideMm ?? analysis.thickness_mm}
-                    onChange={(e) =>
-                      setCostParams((p) => ({
-                        ...p,
-                        thicknessOverrideMm: Number(e.target.value),
-                      }))
-                    }
-                    className="rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-sm font-mono text-zinc-200"
-                  />
-                </div>
-              </div>
-
-              {costParams.processes.welding && (
-                <div className="flex items-center justify-between gap-3 rounded-lg bg-zinc-900 px-3 py-2">
-                  <label className="text-xs text-zinc-500">Weld length (mm)</label>
-                  <input
-                    type="number"
-                    min={0}
-                    value={costParams.weldLengthMm}
-                    onChange={(e) =>
-                      setCostParams((p) => ({
-                        ...p,
-                        weldLengthMm: Math.max(0, Number(e.target.value)),
-                      }))
-                    }
-                    className="w-24 rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-right text-sm font-mono text-zinc-200"
-                  />
-                </div>
-              )}
-
-              {costParams.processes.packing && (
-                <div className="flex items-center justify-between gap-3 rounded-lg bg-zinc-900 px-3 py-2">
-                  <label className="text-xs text-zinc-500">Box size (mm)</label>
-                  <div className="flex gap-2">
-                    {(
-                      [
-                        ["boxLengthMm", "L"],
-                        ["boxWidthMm", "W"],
-                        ["boxHeightMm", "H"],
-                      ] as const
-                    ).map(([field, label]) => (
+                  <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs text-zinc-500">MOQ</label>
                       <input
-                        key={field}
                         type="number"
-                        min={0}
-                        placeholder={label}
-                        aria-label={`Box ${label}`}
-                        value={costParams[field] || ""}
+                        min={1}
+                        value={costParams.moq}
+                        onChange={(e) =>
+                          setCostParams((p) => ({ ...p, moq: Math.max(1, Number(e.target.value)) }))
+                        }
+                        className="rounded border border-zinc-700 bg-zinc-800 px-2 py-2 text-sm font-mono text-zinc-200"
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs text-zinc-500">Material</label>
+                      <select
+                        value={costParams.materialKey}
+                        onChange={(e) => setCostParams((p) => ({ ...p, materialKey: e.target.value }))}
+                        className="rounded border border-zinc-700 bg-zinc-800 px-2 py-2 text-sm text-zinc-200"
+                      >
+                        {Object.keys(MATERIALS).map((k) => (
+                          <option key={k}>{k}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs text-zinc-500">Sheet Size</label>
+                      <select
+                        value={costParams.sheetIndex}
+                        onChange={(e) =>
+                          setCostParams((p) => ({ ...p, sheetIndex: Number(e.target.value) }))
+                        }
+                        className="rounded border border-zinc-700 bg-zinc-800 px-2 py-2 text-sm text-zinc-200"
+                      >
+                        {STANDARD_SHEETS.map((s, i) => (
+                          <option key={i} value={i}>
+                            {s.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs text-zinc-500">Thickness (mm)</label>
+                      <input
+                        type="number"
+                        min={0.5}
+                        step={0.1}
+                        value={costParams.thicknessOverrideMm ?? analysis.thickness_mm}
                         onChange={(e) =>
                           setCostParams((p) => ({
                             ...p,
-                            [field]: Math.max(0, Number(e.target.value)),
+                            thicknessOverrideMm: Number(e.target.value),
                           }))
                         }
-                        className="w-16 rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-center text-sm font-mono text-zinc-200"
+                        className="rounded border border-zinc-700 bg-zinc-800 px-2 py-2 text-sm font-mono text-zinc-200"
                       />
-                    ))}
+                    </div>
                   </div>
-                </div>
-              )}
 
-              <div className="overflow-hidden rounded-lg bg-zinc-900">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-zinc-800 text-xs text-zinc-500">
-                      <th className="px-3 py-2 text-left font-medium">Process</th>
-                      <th className="px-2 py-2 text-center font-medium">pcs/h</th>
-                      <th className="px-2 py-2 text-center font-medium">Setup</th>
-                      <th className="px-3 py-2 text-center font-medium">Cost</th>
-                      <th className="px-3 py-2 text-center font-medium">Unit</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr className="border-b border-zinc-800">
-                      <td className="px-3 py-2 text-zinc-400">Material</td>
-                      <td className="px-2 py-2 text-center text-xs text-zinc-600">-</td>
-                      <td className="px-2 py-2 text-center text-xs text-zinc-600">-</td>
-                      <td className="px-2 py-2 text-center">
-                        <input
-                          type="number"
-                          min={0}
-                          value={costParams.sheetCost}
-                          onChange={(e) =>
-                            setCostParams((p) => ({
-                              ...p,
-                              sheetCost: Math.max(0, Number(e.target.value)),
-                            }))
-                          }
-                          className="w-16 rounded border border-zinc-700 bg-zinc-800 px-1 py-0.5 text-center text-xs font-mono text-zinc-200"
-                        />
-                      </td>
-                      <td className="px-3 py-2 text-center font-mono text-zinc-200">
-                        ${costBreakdown.materialUnit.toFixed(2)}
-                      </td>
-                    </tr>
-                    {(
-                      [
-                        [
-                          "laser",
-                          "Laser / Turret",
-                          "laserSetupMin",
-                          "laserPcsPerHour",
-                          "laserRate",
-                          costBreakdown.cuttingUnit,
-                          costBreakdown.laserPcsPerHour,
-                        ],
-                        [
-                          "bending",
-                          `CNC Bend (${analysis.bend_count})`,
-                          "bendingSetupMin",
-                          "bendingPcsPerHour",
-                          "bendingRate",
-                          costBreakdown.bendingUnit,
-                          costBreakdown.bendingPcsPerHour,
-                        ],
-                        [
-                          "welding",
-                          "Welding",
-                          "weldingSetupMin",
-                          "weldingPcsPerHour",
-                          "weldingRate",
-                          costBreakdown.weldingUnit,
-                          costBreakdown.weldingPcsPerHour,
-                        ],
-                        [
-                          "finishing",
-                          "Finishing",
-                          "finishingSetupMin",
-                          "finishingPcsPerHour",
-                          "finishingRate",
-                          costBreakdown.finishingUnit,
-                          costBreakdown.finishingPcsPerHour,
-                        ],
-                        [
-                          "packing",
-                          "Pack & Inspect",
-                          "packingSetupMin",
-                          "packingPcsPerHour",
-                          "packingRate",
-                          costBreakdown.packingUnit,
-                          costBreakdown.packingPcsPerHour,
-                        ],
-                      ] as const
-                    ).map(([key, label, setupKey, pcsKey, rateKey, unitCost, pcsPerHour]) => (
-                      <tr key={key} className="border-b border-zinc-800">
-                        <td className="px-3 py-2">
-                          <label className="flex cursor-pointer items-center gap-2 text-zinc-300">
-                            <input
-                              type="checkbox"
-                              checked={costParams.processes[key]}
-                              onChange={(e) =>
-                                setCostParams((p) => ({
-                                  ...p,
-                                  processes: { ...p.processes, [key]: e.target.checked },
-                                }))
-                              }
-                              className="accent-blue-500"
-                            />
-                            <span className={costParams.processes[key] ? "" : "text-zinc-600"}>
-                              {label}
-                            </span>
-                          </label>
+                  {costParams.processes.welding && (
+                    <div className="flex items-center justify-between gap-3 rounded-lg bg-zinc-900 px-3 py-2">
+                      <label className="text-xs text-zinc-500">Weld length (mm)</label>
+                      <input
+                        type="number"
+                        min={0}
+                        value={costParams.weldLengthMm}
+                        onChange={(e) =>
+                          setCostParams((p) => ({
+                            ...p,
+                            weldLengthMm: Math.max(0, Number(e.target.value)),
+                          }))
+                        }
+                        className="w-24 rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-right text-sm font-mono text-zinc-200"
+                      />
+                    </div>
+                  )}
+
+                  <div className="overflow-x-auto rounded-lg bg-zinc-900">
+                    <table className="w-full min-w-[760px] text-sm">
+                    <thead>
+                      <tr className="border-b border-zinc-800 text-xs text-zinc-500">
+                        <th className="px-3 py-2 text-left font-medium">Process</th>
+                        <th className="px-2 py-2 text-center font-medium">pcs/h</th>
+                        <th className="px-2 py-2 text-center font-medium">Setup</th>
+                        <th className="px-3 py-2 text-center font-medium">Cost</th>
+                        <th className="px-3 py-2 text-center font-medium">Unit</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr className="border-b border-zinc-800">
+                        <td className="px-3 py-2 text-zinc-400">Material</td>
+                        <td className="px-2 py-2 text-center text-xs text-zinc-600">-</td>
+                        <td className="px-2 py-2 text-center text-xs text-zinc-600">-</td>
+                        <td className="px-2 py-2 text-center">
+                          <input
+                            type="number"
+                            min={0}
+                            value={costParams.sheetCost}
+                            onChange={(e) =>
+                              setCostParams((p) => ({
+                                ...p,
+                                sheetCost: Math.max(0, Number(e.target.value)),
+                              }))
+                            }
+                            className="w-16 rounded border border-zinc-700 bg-zinc-800 px-1 py-0.5 text-center text-xs font-mono text-zinc-200"
+                          />
                         </td>
-                        <td className="px-2 py-2 text-center font-mono text-xs text-zinc-300">
-                          {key === "finishing" ? (
-                            <span className="text-zinc-600">-</span>
-                          ) : (
+                        <td className="px-3 py-2 text-center font-mono text-zinc-200">
+                          ${costBreakdown.materialUnit.toFixed(2)}
+                        </td>
+                      </tr>
+                      {(
+                        [
+                          [
+                            "laser",
+                            "Laser / Turret",
+                            "laserSetupMin",
+                            "laserPcsPerHour",
+                            "laserRate",
+                            costBreakdown.cuttingUnit,
+                            costBreakdown.laserPcsPerHour,
+                          ],
+                          [
+                            "bending",
+                            `CNC Bend (${analysis.bend_count})`,
+                            "bendingSetupMin",
+                            "bendingPcsPerHour",
+                            "bendingRate",
+                            costBreakdown.bendingUnit,
+                            costBreakdown.bendingPcsPerHour,
+                          ],
+                          [
+                            "welding",
+                            "Welding",
+                            "weldingSetupMin",
+                            "weldingPcsPerHour",
+                            "weldingRate",
+                            costBreakdown.weldingUnit,
+                            costBreakdown.weldingPcsPerHour,
+                          ],
+                          [
+                            "finishing",
+                            finishLabel.trim().toUpperCase() || "FINISH",
+                            "finishingSetupMin",
+                            "finishingPcsPerHour",
+                            "finishingRate",
+                            costBreakdown.finishingUnit,
+                            costBreakdown.finishingPcsPerHour,
+                          ],
+                          [
+                            "packing",
+                            "Pack & Inspect",
+                            "packingSetupMin",
+                            "packingPcsPerHour",
+                            "packingRate",
+                            costBreakdown.packingUnit,
+                            costBreakdown.packingPcsPerHour,
+                          ],
+                        ] as const
+                      ).map(([key, label, setupKey, pcsKey, rateKey, unitCost, pcsPerHour]) => (
+                        <tr key={key} className="border-b border-zinc-800">
+                          <td className="px-3 py-2">
+                            <label className="flex cursor-pointer items-center gap-2 text-zinc-300">
+                              <input
+                                type="checkbox"
+                                checked={costParams.processes[key]}
+                                onChange={(e) =>
+                                  setCostParams((p) => ({
+                                    ...p,
+                                    processes: { ...p.processes, [key]: e.target.checked },
+                                  }))
+                                }
+                                className="accent-blue-500"
+                              />
+                              <span className={costParams.processes[key] ? "" : "text-zinc-600"}>
+                                {label}
+                              </span>
+                            </label>
+                          </td>
+                          <td className="px-2 py-2 text-center font-mono text-xs text-zinc-300">
+                            {key === "finishing" ? (
+                              <span className="text-zinc-600">-</span>
+                            ) : (
+                              <input
+                                type="number"
+                                min={0}
+                                disabled={!costParams.processes[key]}
+                                value={costParams[pcsKey] || Math.round(pcsPerHour)}
+                                onChange={(e) =>
+                                  setCostParams((p) => ({
+                                    ...p,
+                                    [pcsKey]: Math.max(0, Number(e.target.value)),
+                                  }))
+                                }
+                                className="w-14 rounded border border-zinc-700 bg-zinc-800 px-1 py-0.5 text-center text-xs font-mono text-zinc-200 disabled:opacity-35"
+                              />
+                            )}
+                          </td>
+                          <td className="px-2 py-2 text-center">
+                            {key === "finishing" ? (
+                              <span className="text-xs text-zinc-600">-</span>
+                            ) : (
+                              <input
+                                type="number"
+                                min={0}
+                                disabled={!costParams.processes[key]}
+                                value={costParams[setupKey]}
+                                onChange={(e) =>
+                                  setCostParams((p) => ({
+                                    ...p,
+                                    [setupKey]: Math.max(0, Number(e.target.value)),
+                                  }))
+                                }
+                                className="w-12 rounded border border-zinc-700 bg-zinc-800 px-1 py-0.5 text-center text-xs font-mono text-zinc-200 disabled:opacity-35"
+                              />
+                            )}
+                          </td>
+                          <td className="px-3 py-2 text-center font-mono text-zinc-200">
                             <input
                               type="number"
                               min={0}
                               disabled={!costParams.processes[key]}
-                              value={costParams[pcsKey] || Math.round(pcsPerHour)}
+                              value={key === "finishing" ? costParams.finishingCost : costParams[rateKey]}
                               onChange={(e) =>
                                 setCostParams((p) => ({
                                   ...p,
-                                  [pcsKey]: Math.max(0, Number(e.target.value)),
+                                  [key === "finishing" ? "finishingCost" : rateKey]: Math.max(
+                                    0,
+                                    Number(e.target.value),
+                                  ),
                                 }))
                               }
                               className="w-14 rounded border border-zinc-700 bg-zinc-800 px-1 py-0.5 text-center text-xs font-mono text-zinc-200 disabled:opacity-35"
                             />
-                          )}
-                        </td>
-                        <td className="px-2 py-2 text-center">
-                          {key === "finishing" ? (
-                            <span className="text-xs text-zinc-600">-</span>
-                          ) : (
-                            <input
-                              type="number"
-                              min={0}
-                              disabled={!costParams.processes[key]}
-                              value={costParams[setupKey]}
-                              onChange={(e) =>
-                                setCostParams((p) => ({
-                                  ...p,
-                                  [setupKey]: Math.max(0, Number(e.target.value)),
-                                }))
-                              }
-                              className="w-12 rounded border border-zinc-700 bg-zinc-800 px-1 py-0.5 text-center text-xs font-mono text-zinc-200 disabled:opacity-35"
-                            />
-                          )}
-                        </td>
-                        <td className="px-3 py-2 text-center font-mono text-zinc-200">
-                          <input
-                            type="number"
-                            min={0}
-                            disabled={!costParams.processes[key]}
-                            value={key === "finishing" ? costParams.finishingCost : costParams[rateKey]}
-                            onChange={(e) =>
-                              setCostParams((p) => ({
-                                ...p,
-                                [key === "finishing" ? "finishingCost" : rateKey]: Math.max(
-                                  0,
-                                  Number(e.target.value),
-                                ),
-                              }))
-                            }
-                            className="w-14 rounded border border-zinc-700 bg-zinc-800 px-1 py-0.5 text-center text-xs font-mono text-zinc-200 disabled:opacity-35"
-                          />
-                        </td>
-                        <td className="px-3 py-2 text-center font-mono text-zinc-200">
-                          {costParams.processes[key] ? `$${unitCost.toFixed(2)}` : "-"}
+                          </td>
+                          <td className="px-3 py-2 text-center font-mono text-zinc-200">
+                            {costParams.processes[key] ? `$${unitCost.toFixed(2)}` : "-"}
+                          </td>
+                        </tr>
+                      ))}
+                      <tr className="border-b border-zinc-700 bg-zinc-800/60">
+                        <td className="px-3 py-2 font-medium text-zinc-200">Total / unit</td>
+                        <td className="px-2 py-2" />
+                        <td className="px-2 py-2" />
+                        <td className="px-2 py-2" />
+                        <td className="px-3 py-2 text-center font-mono font-semibold text-white">
+                          ${costBreakdown.totalUnit.toFixed(2)}
                         </td>
                       </tr>
-                    ))}
-                    <tr className="border-b border-zinc-700 bg-zinc-800/60">
-                      <td className="px-3 py-2 font-medium text-zinc-200">Total / unit</td>
-                      <td className="px-2 py-2" />
-                      <td className="px-2 py-2" />
-                      <td className="px-2 py-2" />
-                      <td className="px-3 py-2 text-center font-mono font-semibold text-white">
-                        ${costBreakdown.totalUnit.toFixed(2)}
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
+                    </tbody>
+                  </table>
+                </div>
 
-              <div className="rounded-lg border border-blue-900/60 bg-blue-950/30 px-3 py-3">
-                <div className="flex items-center justify-between gap-4">
-                  <div>
-                    <div className="text-xs text-zinc-400">Total x {costParams.moq} MOQ</div>
-                    <div className="mt-0.5 text-xs text-zinc-500">
-                      ${costBreakdown.totalUnit.toFixed(2)} / unit
+                  <div className="rounded-lg border border-blue-900/60 bg-blue-950/30 px-3 py-3">
+                    <div className="flex items-center justify-between gap-4">
+                      <div>
+                        <div className="text-xs text-zinc-400">Total x {costParams.moq} MOQ</div>
+                        <div className="mt-0.5 text-xs text-zinc-500">
+                          ${costBreakdown.totalUnit.toFixed(2)} / unit
+                        </div>
+                      </div>
+                      <div className="text-right font-mono text-lg font-semibold text-blue-300">
+                        ${costBreakdown.totalAll.toFixed(2)}
+                      </div>
                     </div>
                   </div>
-                  <div className="text-right font-mono text-lg font-semibold text-blue-300">
-                    ${costBreakdown.totalAll.toFixed(2)}
+                </section>
+
+                <section className="rounded-xl border border-zinc-800 bg-zinc-900/50 overflow-hidden">
+                  <div className="border-b border-zinc-800 px-4 py-3">
+                    <div className="text-xs font-medium uppercase tracking-wide text-zinc-500">MLB</div>
+                    <div className="mt-1 text-xs text-zinc-500">Simple editable structure table.</div>
                   </div>
-                </div>
-              </div>
-            </div>
-          ) : (
-            <div className="flex-1 min-w-[440px] max-w-lg rounded-xl border border-zinc-800 bg-zinc-900/30 p-8 flex flex-col items-center justify-center text-center gap-3">
-              <svg className="h-8 w-8 text-zinc-600 animate-pulse" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-              </svg>
-              <div className="text-sm text-zinc-400 font-medium">Analyzing part geometry...</div>
-              <div className="text-xs text-zinc-500 max-w-[200px]">Extracting features for cost estimation (bends, perimeter, holes)</div>
-            </div>
-          )
-        )}
+                  <div className="overflow-x-auto">
+                    <table className="w-full min-w-[760px] text-sm">
+                      <thead>
+                        <tr className="border-b border-zinc-800 text-xs uppercase tracking-wide text-zinc-500">
+                          <th className="px-4 py-3 text-left font-medium">Type</th>
+                          <th className="px-4 py-3 text-left font-medium">Level</th>
+                          <th className="px-4 py-3 text-left font-medium">Part Number</th>
+                          <th className="px-4 py-3 text-left font-medium">Description</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {editableBomRows.map((row) => {
+                          const itemTone =
+                            row.kind === "fg"
+                              ? "text-blue-300"
+                              : row.kind === "material"
+                                ? "text-amber-300"
+                                : "text-zinc-200";
+                          return (
+                            <tr key={row.id} className="border-b border-zinc-800 align-top">
+                              <td className="px-4 py-3">
+                                <span className={`rounded border border-zinc-800 px-2 py-1 text-xs font-medium ${itemTone}`}>
+                                  {getBomTypeLabel(row)}
+                                </span>
+                              </td>
+                              <td className="px-4 py-3">
+                                <input
+                                  type="number"
+                                  min={0}
+                                  step={1}
+                                  value={row.depth}
+                                  onChange={(e) => updateBomLevel(row.id, e.target.value)}
+                                  className="w-20 rounded border border-zinc-700 bg-zinc-950 px-2 py-2 text-sm font-mono text-zinc-300"
+                                />
+                              </td>
+                              <td className="px-4 py-3">
+                                <input
+                                  type="text"
+                                  value={row.itemNumber}
+                                  onChange={(e) => updateBomRow(row.id, "itemNumber", e.target.value)}
+                                  className={`w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-2 text-sm font-mono ${itemTone}`}
+                                />
+                              </td>
+                              <td className="px-4 py-3">
+                                <input
+                                  type="text"
+                                  value={row.description}
+                                  onChange={(e) => updateBomRow(row.id, "description", e.target.value)}
+                                  className="w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-2 text-sm text-zinc-300"
+                                />
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+
+                <section className="rounded-xl border border-zinc-800 bg-zinc-900/50 overflow-hidden">
+                  <div className="border-b border-zinc-800 px-4 py-3">
+                    <div className="text-xs font-medium uppercase tracking-wide text-zinc-500">PFC</div>
+                    <div className="mt-1 text-xs text-zinc-500">Process flow chart derived from the current MLB rows.</div>
+                  </div>
+                  <div className="p-4 flex flex-col gap-3 text-center">
+                    {bomFlow.map((node, index) => {
+                      const tone =
+                        node.kind === "material"
+                          ? "border-amber-900/70 bg-amber-950/20"
+                          : node.kind === "fg"
+                            ? "border-blue-900/70 bg-blue-950/20"
+                            : "border-zinc-700 bg-zinc-900";
+                      return (
+                        <div key={node.id} className="flex flex-col items-center gap-3 text-center">
+                          {index > 0 && (
+                            <div className="flex flex-col items-center gap-1 text-zinc-500">
+                              <div className="h-5 w-px bg-zinc-700" />
+                              <div className="text-xs">▼</div>
+                            </div>
+                          )}
+                          <div className={`w-fit max-w-full min-w-[20rem] rounded-lg border px-4 py-3 text-center ${tone}`}>
+                            <div className="text-xs uppercase tracking-wide text-zinc-500">
+                              {node.kind === "material"
+                                ? "Raw Material"
+                                : node.kind === "fg"
+                                  ? "Finished Good"
+                                  : "Process Stage"}
+                            </div>
+                            <div className="mt-1 font-mono text-sm text-zinc-100">{node.itemNumber}</div>
+                            <div className="mt-1 text-sm text-zinc-300">{node.description}</div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+              </>
+            ) : (
+              <section className="rounded-xl border border-zinc-800 bg-zinc-900/30 p-8 flex flex-col items-center justify-center text-center gap-3">
+                <svg className="h-8 w-8 text-zinc-600 animate-pulse" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+                <div className="text-sm text-zinc-400 font-medium">Analyzing part geometry…</div>
+                <div className="text-xs text-zinc-500 max-w-[200px]">Extracting features for cost estimation (bends, perimeter, holes)</div>
+              </section>
+            )
+          )}
+        </div>
       </div>
     </main>
   );

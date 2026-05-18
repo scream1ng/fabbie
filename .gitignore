@@ -27,6 +27,9 @@ npm-debug.log*
 
 # Logs
 *.log
+*.err
+*.out
+*.tsbuildinfo
 
 # Local exports / temp files
 *.tmp

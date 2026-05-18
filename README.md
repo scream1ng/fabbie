@@ -1,21 +1,57 @@
 # step-to-label
 
-Drop a STEP file → get an isometric wireframe JPG (26×26 cm, 300 dpi) for label printing.
+Upload a STEP file and get three things in one local workflow:
+
+- a 3D hidden-line viewer
+- a costing window
+- an editable MLB and PFC
 
 ## Stack
 
 | Layer | Tech |
 |-------|------|
 | Frontend | Next.js 14, Tailwind CSS |
-| Backend | Python FastAPI |
-| CAD engine | pythonocc-core (OpenCASCADE) |
-| Image | Pillow |
+| Backend | FastAPI |
+| CAD engine | pythonocc-core / OpenCASCADE |
+| 3D viewer | three.js |
 
-## Setup
+## Current Workflow
+
+After upload, the page is arranged as a vertical flow:
+
+1. 3D viewer
+2. export controls
+3. costing
+4. MLB
+5. PFC
+
+### Costing
+
+- material, sheet, thickness, MOQ
+- process toggles for laser, bend, weld, finish, packing
+- editable rates / setup / pcs per hour
+- total unit cost and MOQ total
+
+### MLB
+
+- separate section from costing
+- columns: `Type`, `Level`, `Part Number`, `Description`
+- `Part Number` and `Description` are editable
+- `Level` is editable and cascades through child rows
+- process rows are generated from the process checkboxes in costing
+- FG changes flow down into process row part numbers and descriptions
+
+### PFC
+
+- separate section from MLB
+- generated from the current MLB rows
+- centered flow cards with width sized closer to content
+
+## Local Setup
 
 ### Backend
 
-pythonocc-core must be installed via **conda** (pip wheel is unreliable):
+`pythonocc-core` should be installed with conda:
 
 ```bash
 conda create -n step-label python=3.11
@@ -23,8 +59,14 @@ conda activate step-label
 conda install -c conda-forge pythonocc-core
 
 cd backend
-pip install fastapi "uvicorn[standard]" pillow python-multipart
+pip install -r requirements.txt
 uvicorn main:app --reload --port 8000
+```
+
+Health check:
+
+```bash
+http://127.0.0.1:8000/health
 ```
 
 ### Frontend
@@ -32,31 +74,16 @@ uvicorn main:app --reload --port 8000
 ```bash
 cd frontend
 npm install
-npm run dev
+npm run dev -- --port 3000
 ```
 
-Open http://localhost:3000
+Open:
 
-## Usage
-
-1. Drop a `.step` / `.stp` file onto the drop zone
-2. Adjust line thickness if needed
-3. Click **Generate label**
-4. Preview renders — click **Download** to save JPG
-
-Output: `<filename>_label.jpg` — 3071×3071 px, 300 dpi, white background, black wireframe.
-
-## API
-
-```
-POST /api/convert?line_px=3
-  body: multipart/form-data  field: file (.step/.stp)
-  returns: image/jpeg
+```bash
+http://127.0.0.1:3000
 ```
 
-## Roadmap
+## Notes
 
-- [ ] Sheet metal costing (laser cut — material + cut length)
-- [ ] Press brake — bend count × length pricing
-- [ ] Welding estimate
-- [ ] PDF export with part number / BOM
+- Upload endpoint used by the frontend: `POST /api/full-process`
+- The frontend dev server can occasionally get into a stale Next.js cache state on restart. If that happens, clear `frontend/.next` and restart `npm run dev -- --port 3000`.
