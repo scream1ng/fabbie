@@ -20,6 +20,7 @@ import {
   buildBomTree,
   buildProcessStages,
 } from "./bom";
+import MlbSection, { type BomRow } from "../components/MlbSection";
 
 type Status = "idle" | "loading" | "viewing" | "exporting" | "error";
 
@@ -44,7 +45,7 @@ function Home() {
   const [materialDescription, setMaterialDescription] = useState("MILD STEEL");
   const [finishCode, setFinishCode] = useState("E");
   const [finishLabel, setFinishLabel] = useState("E-COAT");
-  const [editableBomRows, setEditableBomRows] = useState<BomTreeRow[]>([]);
+  const [mlbRows, setMlbRows] = useState<BomRow[]>([]);
   const [costParams, setCostParams] = useState<CostParams>({
     moq: 1,
     materialKey: "Mild Steel",
@@ -93,27 +94,21 @@ function Home() {
     [bomDescription, bomPartNumber, bomStages, materialDescription, materialNumber],
   );
   const bomFlow = useMemo(() => {
-    if (editableBomRows.length === 0) {
-      return [];
-    }
-
-    const fg = editableBomRows[0];
-    const material = editableBomRows.at(-1);
-    if (!fg || !material) {
-      return [];
-    }
-
+    if (mlbRows.length === 0) return [];
+    const fg = mlbRows[0];
+    const material = mlbRows.at(-1);
+    if (!fg || !material) return [];
     return [
       material,
-      ...editableBomRows.slice(1, -1).reverse(),
+      ...mlbRows.slice(1, -1).reverse(),
       fg,
     ].map((row) => ({
-      id: row.id,
-      itemNumber: row.itemNumber,
-      description: row.description,
-      kind: row.kind,
+      id: row.p,
+      itemNumber: row.p,
+      description: row.d,
+      kind: (row.proc === 'FG' ? 'fg' : row.proc === 'RAW' ? 'material' : 'process') as 'fg' | 'material' | 'process',
     }));
-  }, [editableBomRows]);
+  }, [mlbRows]);
   const mountRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
@@ -172,20 +167,29 @@ function Home() {
   }, [linePx]);
 
   useEffect(() => {
-    setEditableBomRows((previousRows) =>
-      generatedBomRows.map((row) => {
-        const existingRow = previousRows.find((candidate) => candidate.id === row.id);
-        if (!existingRow) {
-          return row;
-        }
+    setMlbRows((prev) => {
+      const procOf = (row: BomTreeRow): string => {
+        if (row.kind === 'fg') return 'FG';
+        if (row.kind === 'material') return 'RAW';
+        const m = row.description.match(/\(([^)]+)\)\s*$/);
+        const label = m?.[1]?.toUpperCase() ?? '';
+        if (label === 'LASER') return 'Laser';
+        if (label === 'BEND') return 'Bend';
+        if (label === 'WELD') return 'Weld';
+        return '';
+      };
+      return generatedBomRows.map((row) => {
+        const proc = procOf(row);
+        const existing = prev.find((r) => r.proc === proc);
         return {
-          ...row,
-          depth: existingRow.depth,
-          itemNumber: existingRow.itemNumber,
-          description: existingRow.description,
+          p: row.itemNumber,
+          d: existing ? existing.d : row.description,
+          proc,
+          qty: existing ? existing.qty : '1',
+          lvl: existing ? existing.lvl : row.depth,
         };
-      }),
-    );
+      });
+    });
   }, [generatedBomRows]);
 
   const loadMesh = useCallback(
@@ -523,149 +527,12 @@ function Home() {
     setErrorMsg("");
     setPartName("");
     setAnalysis(null);
-    setEditableBomRows([]);
     setBomPartNumber("");
     setBomDescription("");
     setMaterialNumber("MAT-001");
     setMaterialDescription("MILD STEEL");
     setFinishCode("E");
     setFinishLabel("E-COAT");
-  };
-
-  const formatBomLabel = (value: string) =>
-    value
-      .toLowerCase()
-      .replace(/\b\w/g, (char) => char.toUpperCase());
-
-  const getProcessCode = (row: BomTreeRow) => row.id.replace(/^stage-/, "").toUpperCase();
-
-  const syncProcessItemNumbers = (rows: BomTreeRow[]) => {
-    const fgRow = rows.find((row) => row.id === "fg");
-    if (!fgRow) {
-      return rows;
-    }
-
-    const processCodes: string[] = [];
-    return rows.map((row) => {
-      if (row.kind !== "process") {
-        return row;
-      }
-
-      const nextDepth = Math.max(1, row.depth);
-      processCodes.length = Math.max(0, nextDepth - 1);
-      processCodes[nextDepth - 1] = getProcessCode(row);
-      const suffix = processCodes
-        .slice(0, nextDepth)
-        .filter(Boolean)
-        .reverse()
-        .join("");
-
-      return {
-        ...row,
-        itemNumber: `${fgRow.itemNumber}${suffix}`,
-      };
-    });
-  };
-
-  const getBomTypeLabel = (row: BomTreeRow) => {
-    if (row.kind === "fg") return "FG";
-    if (row.kind === "material") return "Material";
-    if (row.id === "stage-L") return "Laser";
-    if (row.id === "stage-B") return "Bend";
-    if (row.id === "stage-W") return "Weld";
-    const normalizedFinishCode = finishCode.trim().toUpperCase().replace(/[^A-Z0-9]/g, "") || "F";
-    if (row.id === `stage-${normalizedFinishCode}`) {
-      return formatBomLabel(finishLabel.trim() || "FINISH");
-    }
-    const match = row.description.match(/\(([^)]+)\)\s*$/);
-    return formatBomLabel(match?.[1] ?? "PROCESS");
-  };
-
-  const updateBomRow = (id: string, field: "itemNumber" | "description", value: string) => {
-    const nextValue = field === "itemNumber" ? value.toUpperCase() : value;
-
-    if (id === "fg") {
-      if (field === "itemNumber") {
-        setBomPartNumber(nextValue);
-      } else {
-        setBomDescription(nextValue);
-      }
-    }
-
-    if (id === "material") {
-      if (field === "itemNumber") {
-        setMaterialNumber(nextValue);
-      } else {
-        setMaterialDescription(nextValue);
-      }
-    }
-
-    setEditableBomRows((rows) => {
-      const fgRow = rows.find((row) => row.id === "fg");
-
-      const nextRows = rows.map((row) => {
-        if (row.id === id) {
-          return { ...row, [field]: nextValue };
-        }
-
-        if (id === "fg" && row.kind === "process" && fgRow) {
-          if (field === "itemNumber") {
-            const suffix = row.itemNumber.startsWith(fgRow.itemNumber)
-              ? row.itemNumber.slice(fgRow.itemNumber.length)
-              : "";
-            return { ...row, itemNumber: `${nextValue}${suffix}` };
-          }
-
-          const match = row.description.match(/\(([^)]+)\)\s*$/);
-          const stageLabel = match?.[1] ?? "PROCESS";
-          return { ...row, description: `${nextValue} (${stageLabel})` };
-        }
-
-        return row;
-      });
-
-      if (id === "fg" && field === "itemNumber") {
-        return syncProcessItemNumbers(nextRows);
-      }
-
-      return nextRows;
-    });
-  };
-
-  const updateBomLevel = (id: string, value: string) => {
-    const parsedLevel = Number.parseInt(value, 10);
-    if (!Number.isFinite(parsedLevel)) {
-      return;
-    }
-
-    setEditableBomRows((rows) => {
-      const targetIndex = rows.findIndex((row) => row.id === id);
-      if (targetIndex === -1) {
-        return rows;
-      }
-
-      const nextLevel = Math.max(0, parsedLevel);
-      const currentLevel = rows[targetIndex].depth;
-      const levelDelta = nextLevel - currentLevel;
-      if (levelDelta === 0) {
-        return rows;
-      }
-
-      const nextRows = [...rows];
-      nextRows[targetIndex] = { ...nextRows[targetIndex], depth: nextLevel };
-
-      for (let index = targetIndex + 1; index < nextRows.length; index += 1) {
-        if (rows[index].depth <= currentLevel) {
-          break;
-        }
-        nextRows[index] = {
-          ...nextRows[index],
-          depth: Math.max(0, rows[index].depth + levelDelta),
-        };
-      }
-
-      return syncProcessItemNumbers(nextRows);
-    });
   };
 
   const showDrop = status === "idle" || status === "error";
@@ -1127,69 +994,7 @@ function Home() {
                   </div>
                 </section>
 
-                <section className="rounded-xl border border-zinc-800 bg-zinc-900/50 overflow-hidden">
-                  <div className="border-b border-zinc-800 px-4 py-3">
-                    <div className="text-xs font-medium uppercase tracking-wide text-zinc-500">MLB</div>
-                    <div className="mt-1 text-xs text-zinc-500">Simple editable structure table.</div>
-                  </div>
-                  <div className="overflow-x-auto">
-                    <table className="w-full min-w-[760px] text-sm">
-                      <thead>
-                        <tr className="border-b border-zinc-800 text-xs uppercase tracking-wide text-zinc-500">
-                          <th className="px-4 py-3 text-left font-medium">Type</th>
-                          <th className="px-4 py-3 text-left font-medium">Level</th>
-                          <th className="px-4 py-3 text-left font-medium">Part Number</th>
-                          <th className="px-4 py-3 text-left font-medium">Description</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {editableBomRows.map((row) => {
-                          const itemTone =
-                            row.kind === "fg"
-                              ? "text-blue-300"
-                              : row.kind === "material"
-                                ? "text-amber-300"
-                                : "text-zinc-200";
-                          return (
-                            <tr key={row.id} className="border-b border-zinc-800 align-top">
-                              <td className="px-4 py-3">
-                                <span className={`rounded border border-zinc-800 px-2 py-1 text-xs font-medium ${itemTone}`}>
-                                  {getBomTypeLabel(row)}
-                                </span>
-                              </td>
-                              <td className="px-4 py-3">
-                                <input
-                                  type="number"
-                                  min={0}
-                                  step={1}
-                                  value={row.depth}
-                                  onChange={(e) => updateBomLevel(row.id, e.target.value)}
-                                  className="w-20 rounded border border-zinc-700 bg-zinc-950 px-2 py-2 text-sm font-mono text-zinc-300"
-                                />
-                              </td>
-                              <td className="px-4 py-3">
-                                <input
-                                  type="text"
-                                  value={row.itemNumber}
-                                  onChange={(e) => updateBomRow(row.id, "itemNumber", e.target.value)}
-                                  className={`w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-2 text-sm font-mono ${itemTone}`}
-                                />
-                              </td>
-                              <td className="px-4 py-3">
-                                <input
-                                  type="text"
-                                  value={row.description}
-                                  onChange={(e) => updateBomRow(row.id, "description", e.target.value)}
-                                  className="w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-2 text-sm text-zinc-300"
-                                />
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                </section>
+                <MlbSection rows={mlbRows} onRowsChange={setMlbRows} />
 
                 <section className="rounded-xl border border-zinc-800 bg-zinc-900/50 overflow-hidden">
                   <div className="border-b border-zinc-800 px-4 py-3">
