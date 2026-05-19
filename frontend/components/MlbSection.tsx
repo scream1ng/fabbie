@@ -8,6 +8,7 @@ export interface BomRow {
   proc: string;
   qty: string;
   lvl: number;
+  unit_cost?: string;
 }
 
 interface MlbSectionProps {
@@ -142,7 +143,7 @@ function BomRowEl({ row, idx, rows, onUpdate, onChangeLevel }: RowProps) {
   return (
     <div
       className="grid items-stretch h-[30px] rounded px-0.5 group/row hover:bg-gray-50 dark:hover:bg-gray-800/50"
-      style={{ gridTemplateColumns: '36px 224px 100px 1fr 60px' }}
+      style={{ gridTemplateColumns: '36px 224px 100px 1fr 60px 72px' }}
     >
       <div className="flex items-center justify-center gap-0.5 opacity-0 group-hover/row:opacity-100 transition-opacity">
         <button
@@ -169,6 +170,16 @@ function BomRowEl({ row, idx, rows, onUpdate, onChangeLevel }: RowProps) {
       <Cell value={row.d} onChange={v => onUpdate('d', v)} />
 
       <Cell value={row.qty} onChange={v => onUpdate('qty', v)} centerAlign />
+
+      <div className="flex items-stretch">
+        {row.proc === 'RAW' ? (
+          <Cell value={row.unit_cost ?? '0'} onChange={v => onUpdate('unit_cost', v)} centerAlign placeholder="0.00" />
+        ) : (
+          <div className="flex items-center justify-center w-full">
+            <span className="text-xs text-gray-300 dark:text-gray-600">—</span>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -237,13 +248,14 @@ export default function MlbSection({ rows: propRows, onRowsChange }: MlbSectionP
 
         <div
           className="grid px-3.5 h-7 items-center border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50"
-          style={{ gridTemplateColumns: '36px 224px 100px 1fr 60px' }}
+          style={{ gridTemplateColumns: '36px 224px 100px 1fr 60px 72px' }}
         >
           <span />
           <span className="text-[10px] font-medium uppercase tracking-wider text-gray-400 dark:text-gray-500 px-1.5">Part</span>
           <span className="text-[10px] font-medium uppercase tracking-wider text-gray-400 dark:text-gray-500 px-1.5 text-center">Process</span>
           <span className="text-[10px] font-medium uppercase tracking-wider text-gray-400 dark:text-gray-500 px-1.5">Description</span>
           <span className="text-[10px] font-medium uppercase tracking-wider text-gray-400 dark:text-gray-500 px-1.5 text-center">Qty</span>
+          <span className="text-[10px] font-medium uppercase tracking-wider text-gray-400 dark:text-gray-500 px-1.5 text-center">$ Unit</span>
         </div>
 
         <div className="overflow-y-auto px-2 py-1" style={{ height: '360px' }}>

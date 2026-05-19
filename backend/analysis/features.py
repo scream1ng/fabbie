@@ -19,10 +19,7 @@ def _build_maps(text):
     return pt, direction, axis
 
 
-def analyse_step_features(path: str) -> dict:
-    with open(path, "r", errors="replace") as fh:
-        text = fh.read()
-
+def analyse_step_features_text(text: str) -> dict:
     raw_pts = re.findall(r"CARTESIAN_POINT\('[^']*',\(([\d.E+\-]+),", text)
     scale = 1.0
     for value in raw_pts:
@@ -117,4 +114,19 @@ def analyse_step_features(path: str) -> dict:
         "flat_blank_w_mm": 0.0,
         "flat_blank_h_mm": 0.0,
     }
+
+
+def analyse_step_features(path: str) -> dict:
+    with open(path, "r", errors="replace") as fh:
+        text = fh.read()
+    return analyse_step_features_text(text)
+
+
+def classify_component(features: dict) -> str:
+    thickness = features.get("thickness_mm", 0.0)
+    bbox = features.get("bbox_mm", [0.0, 0.0, 0.0])
+    largest = max(bbox) if bbox else 0.0
+    if thickness > 0 and largest / thickness > 5:
+        return "sheet_metal"
+    return "other"
 
