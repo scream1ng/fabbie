@@ -170,3 +170,49 @@ export function buildMermaidFlow(nodes: BomFlowNode[]) {
   }
   return lines.join("\n");
 }
+
+// ── MLB-based Mermaid generator ───────────────────────────────────────────────
+// Accepts the flat BomRow array from MlbSection. Edges: child (high lvl) → parent (low lvl).
+// Shapes: rect for RAW / FG / component-header (proc=''), rounded for process ops.
+
+interface _MlbRow {
+  p: string;
+  d: string;
+  proc: string;
+  lvl: number;
+}
+
+export function buildMermaidFromMlb(rows: _MlbRow[]): string {
+  if (rows.length === 0) return "";
+
+  const esc = (s: string) =>
+    s.replace(/"/g, "#quot;").replace(/\[/g, "#91;").replace(/\]/g, "#93;");
+
+  const nid = (i: number) => `N${i}`;
+
+  const decl = (row: _MlbRow, i: number): string => {
+    const label = esc(`${row.lvl}: ${row.d || row.p}`);
+    const rect = row.proc === "RAW" || row.proc === "FG" || row.proc === "";
+    return rect ? `${nid(i)}["${label}"]` : `${nid(i)}("${label}")`;
+  };
+
+  // nearest preceding row whose lvl === current.lvl - 1
+  const parentOf = (i: number): number => {
+    const lvl = rows[i].lvl;
+    for (let j = i - 1; j >= 0; j--) {
+      if (rows[j].lvl === lvl - 1) return j;
+    }
+    return -1;
+  };
+
+  const lines = ["graph TD"];
+  rows.forEach((row, i) => lines.push(`    ${decl(row, i)}`));
+  lines.push("");
+  rows.forEach((row, i) => {
+    if (row.lvl === 0) return;
+    const pi = parentOf(i);
+    if (pi >= 0) lines.push(`    ${nid(i)} --> ${nid(pi)}`);
+  });
+
+  return lines.join("\n");
+}

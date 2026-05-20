@@ -4,8 +4,21 @@ from typing import Dict, List, Optional, Tuple
 _PURCHASE_KEYWORDS = {
     'STUD', 'BOLT', 'NUT', 'SCREW', 'RIVET', 'WASHER', 'PIN',
     'FASTENER', 'BUSH', 'BUSHING', 'BEARING', 'SPRING', 'CLIP',
-    'CIRCLIP', 'SEAL', 'GASKET', 'INSERT', 'STANDOFF',
+    'CIRCLIP', 'SEAL', 'GASKET', 'INSERT', 'STANDOFF', 'SPACER',
 }
+
+# Compiled once — strip NX internal prefix (e.g. 'WAG-109459_0001_1-') and
+# trailing variant tag (e.g. ' _DJ MCA MY26 WARLOCK_').
+_NX_PREFIX = re.compile(r'^.+?_\d+_\d+-')
+_NX_SUFFIX = re.compile(r'\s+_[^_]+_\s*$')
+
+
+def _clean_nx_name(name: str) -> str:
+    s = _NX_PREFIX.sub('', name, count=1).strip()
+    if not s:
+        return name
+    s = _NX_SUFFIX.sub('', s).strip()
+    return s or name
 
 
 def _is_purchase_part(name: str) -> bool:
@@ -97,7 +110,7 @@ def parse_assembly(text: str) -> dict:
                 "is_assembly": False,
                 "component_count": 1,
                 "components": [{
-                    "part_number": first["part_id"] or first["name"],
+                    "part_number": _clean_nx_name(first["part_id"] or first["name"]),
                     "description": first["description"],
                     "level": 0,
                     "is_assembly": False,
@@ -121,8 +134,9 @@ def parse_assembly(text: str) -> dict:
         visited.add(pd_id)
         info = _resolve(pd_id) or {"part_id": "", "name": f"PD#{pd_id}", "description": ""}
         kids = children_of.get(pd_id, [])
+        raw_name = info["part_id"] or info["name"]
         components.append({
-            "part_number": info["part_id"] or info["name"],
+            "part_number": _clean_nx_name(raw_name),
             "description": info["description"],
             "level": level,
             "is_assembly": len(kids) > 0,

@@ -165,7 +165,9 @@ function BomRowEl({ row, idx, rows, onUpdate, onChangeLevel }: RowProps) {
         <Cell value={row.p} onChange={v => onUpdate('p', v)} />
       </div>
 
-      <Cell value={row.proc} onChange={v => onUpdate('proc', v)} centerAlign />
+      <div className="flex items-center justify-center px-1.5">
+        <span className="text-xs font-mono text-zinc-400 truncate">{row.proc || '—'}</span>
+      </div>
 
       <Cell value={row.d} onChange={v => onUpdate('d', v)} />
 
@@ -216,13 +218,6 @@ export default function MlbSection({ rows: propRows, onRowsChange }: MlbSectionP
             return { ...r, d: value + r.d.slice(oldD.length) };
           }
           return r;
-        });
-      }
-      if (field === 'proc' && idx > 0) {
-        return prev.map((r, i) => {
-          if (i !== idx) return r;
-          const baseD = r.d.replace(/\s*\([^)]*\)$/, '');
-          return { ...r, proc: value, d: value ? `${baseD} (${value.toUpperCase()})` : baseD };
         });
       }
       return prev.map((r, i) => i === idx ? { ...r, [field]: value } : r);
