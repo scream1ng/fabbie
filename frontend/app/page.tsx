@@ -8,15 +8,25 @@ import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
 import { LineSegments2 } from "three/examples/jsm/lines/LineSegments2.js";
 import { LineSegmentsGeometry } from "three/examples/jsm/lines/LineSegmentsGeometry.js";
 
-import type { CostBreakdown, CostConfig, PartAnalysis } from "./costing";
+import type {
+  CostBreakdown,
+  CostConfig,
+  PartAnalysis,
+  ProcessDef,
+  ProcessPhase,
+  MaterialConfig,
+  SheetConfig,
+  ManualPurchasePart,
+} from "./costing";
 import {
   calculateCost,
+  calculateAssemblyProcessCost,
   DEFAULT_COST_CONFIG,
+  effectiveProcessesForComponent,
+  getProcessesByPhase,
   resolveComponentConfig,
 } from "./costing";
-import type { GlobalRates, ProcessConfig, FinishingConfig, MaterialConfig, SheetConfig } from "./costing";
 import {
-  type BomStage,
   type BomTreeRow,
   buildBomTree,
   buildProcessStages,
@@ -52,10 +62,9 @@ function mergeAssemblyRows(newRows: BomRow[], prev: BomRow[]): BomRow[] {
 
 function buildAssemblyMlbRows(
   components: ApiComp[],
-  stages: BomStage[],
+  costConfig: CostConfig,
   matNum: string,
   matDesc: string,
-  assemblyOps: { welding: boolean; finishing: boolean },
 ): BomRow[] {
   const root = components.find(c => c.level === 0);
   const rows: BomRow[] = [];
@@ -63,21 +72,27 @@ function buildAssemblyMlbRows(
     rows.push({ p: root.part_number, d: compLabel(root), proc: 'FG', qty: '1', lvl: 0 });
   }
 
-  // Assembly ops ordered outermost→innermost (E-Coat wraps Weld).
-  // lvl:1 = E-Coat (last applied, outermost parent)
-  // lvl:2 = Weld   (consumed by E-Coat; direct parent of components)
-  const asmOps: BomRow[] = [];
-  if (assemblyOps.finishing) asmOps.push({ p: 'ECOAT', d: 'E-Coat / Powder Coat', proc: 'Gal',  qty: '1', lvl: 1 });
-  if (assemblyOps.welding)   asmOps.push({ p: 'WELD',  d: 'Assembly Weld',        proc: 'Weld', qty: '1', lvl: asmOps.length + 1 });
-  rows.push(...asmOps);
+  // Assembly ops in BOM order: post-assembly (outermost) → pre-assembly → components.
+  // Array order = BOM order. First element of post-asm → lvl:1 (last applied / outermost in BOM).
+  const postAsm = getProcessesByPhase(costConfig.processes, 'post-assembly').filter(p => p.enabled);
+  const preAsm  = getProcessesByPhase(costConfig.processes, 'pre-assembly').filter(p => p.enabled);
 
-  // Components are children of the innermost assembly op.
-  const compOffset = asmOps.length + 1; // e.g. 3 when both E-Coat(1) + Weld(2) present
+  let lvl = 1;
+  for (const p of postAsm) {
+    rows.push({ p: p.key.toUpperCase(), d: p.label, proc: p.mlbProcLabel, qty: '1', lvl: lvl++ });
+  }
+  for (const p of preAsm) {
+    rows.push({ p: p.key.toUpperCase(), d: p.label, proc: p.mlbProcLabel, qty: '1', lvl: lvl++ });
+  }
+  const compOffset = lvl;
 
+  // Each parsed component
   for (const comp of components.filter(c => c.level > 0 && !c.is_assembly)) {
     if (comp.type === 'purchase') {
       rows.push({ p: comp.part_number, d: compLabel(comp), proc: 'RAW', qty: '1', lvl: compOffset, unit_cost: '0' });
     } else {
+      const effProcs = effectiveProcessesForComponent(costConfig, comp.part_number);
+      const stages = buildProcessStages(effProcs);
       const subTree = buildBomTree({
         partNumber: comp.part_number,
         description: compLabel(comp),
@@ -86,17 +101,31 @@ function buildAssemblyMlbRows(
         stages,
       });
       for (const row of subTree) {
-        const bracket = row.description.match(/\(([^)]+)\)\s*$/)?.[1]?.toUpperCase() ?? '';
+        const bracket = row.description.match(/\(([^)]+)\)\s*$/)?.[1] ?? '';
         const proc = row.kind === 'material' ? 'RAW'
-          : row.kind === 'fg'   ? ''
-          : bracket === 'LASER' ? 'Laser'
-          : bracket === 'BEND'  ? 'Bend'
-          : bracket === 'WELD'  ? 'Weld'
+          : row.kind === 'fg' ? ''
           : bracket || '';
-        // depth 0 = component header; processes at depth 1+; RAW at deepest
-        rows.push({ p: row.itemNumber, d: row.description, proc, qty: '1', lvl: compOffset + row.depth });
+        rows.push({
+          p: row.itemNumber,
+          d: row.description,
+          proc,
+          qty: '1',
+          lvl: compOffset + row.depth,
+        });
       }
     }
+  }
+
+  // Manual purchase parts → same lvl as parsed components (children of innermost asm op)
+  for (const mpp of costConfig.manualPurchaseParts) {
+    rows.push({
+      p: mpp.partNumber || mpp.id,
+      d: mpp.description || mpp.partNumber || 'Purchase Part',
+      proc: 'RAW',
+      qty: String(mpp.qty || 1),
+      lvl: compOffset,
+      unit_cost: String(mpp.unitCost || 0),
+    });
   }
 
   return rows;
@@ -108,7 +137,8 @@ const MAX_VIEWER_SEGMENTS = 60000;
 const EXPORT_SUPERSAMPLE = 4;
 
 
-function CostTable({ bd, analysis, costConfig, setCostConfig, partId, purchasePartsCost }: {
+// Per-component cost table: iterates dynamic processes filtered to 'component' phase
+function CostTable({ bd, costConfig, setCostConfig, partId, purchasePartsCost }: {
   bd: CostBreakdown;
   analysis: PartAnalysis;
   costConfig: CostConfig;
@@ -116,10 +146,12 @@ function CostTable({ bd, analysis, costConfig, setCostConfig, partId, purchasePa
   partId?: string;
   purchasePartsCost: number;
 }) {
-  const eff = resolveComponentConfig(costConfig, partId);
-  const procs = eff.processes;
+  const effectiveProcs = partId
+    ? effectiveProcessesForComponent(costConfig, partId)
+    : costConfig.processes;
+  const componentProcs = effectiveProcs.filter(p => p.phase === 'component');
 
-  const setGlobalSheetCost = (v: number) => {
+  const setSheetCost = (v: number) => {
     if (partId) {
       setCostConfig(c => ({ ...c, perComponent: { ...c.perComponent, [partId]: { ...c.perComponent[partId], sheetCost: v } } }));
     } else {
@@ -127,47 +159,42 @@ function CostTable({ bd, analysis, costConfig, setCostConfig, partId, purchasePa
     }
   };
 
-  type ProcKey = 'laser' | 'bending' | 'welding' | 'packing';
-  const setProc = (key: ProcKey, field: keyof ProcessConfig, val: boolean | number) => {
+  const tuneProc = (procKey: string, field: 'pcsPerHour' | 'setupMin' | 'rate' | 'flatCostPerUnit', val: number) => {
     if (partId) {
       setCostConfig(c => ({
-        ...c, perComponent: { ...c.perComponent, [partId]: {
-          ...c.perComponent[partId], processes: {
-            ...(c.perComponent[partId]?.processes ?? {}),
-            [key]: { ...(c.perComponent[partId]?.processes?.[key] ?? c.processes[key]), [field]: val },
+        ...c,
+        perComponent: { ...c.perComponent, [partId]: {
+          ...c.perComponent[partId],
+          perProcess: {
+            ...(c.perComponent[partId]?.perProcess ?? {}),
+            [procKey]: { ...(c.perComponent[partId]?.perProcess?.[procKey] ?? {}), [field]: val },
           },
         }},
       }));
     } else {
-      setCostConfig(c => ({ ...c, processes: { ...c.processes, [key]: { ...c.processes[key], [field]: val } } }));
+      setCostConfig(c => ({
+        ...c,
+        processes: c.processes.map(p => p.key === procKey ? { ...p, [field]: val } : p),
+      }));
     }
   };
 
-  const setFinishing = (field: keyof FinishingConfig, val: boolean | number) => {
+  const toggleProc = (procKey: string, on: boolean) => {
     if (partId) {
+      const current = costConfig.perComponent[partId]?.enabledProcessKeys
+        ?? costConfig.processes.filter(p => p.enabled && p.phase === 'component').map(p => p.key);
+      const next = on ? Array.from(new Set([...current, procKey])) : current.filter(k => k !== procKey);
       setCostConfig(c => ({
-        ...c, perComponent: { ...c.perComponent, [partId]: {
-          ...c.perComponent[partId], processes: {
-            ...(c.perComponent[partId]?.processes ?? {}),
-            finishing: { ...(c.perComponent[partId]?.processes?.finishing ?? c.processes.finishing), [field]: val },
-          },
-        }},
+        ...c,
+        perComponent: { ...c.perComponent, [partId]: { ...c.perComponent[partId], enabledProcessKeys: next } },
       }));
     } else {
-      setCostConfig(c => ({ ...c, processes: { ...c.processes, finishing: { ...c.processes.finishing, [field]: val } } }));
+      setCostConfig(c => ({
+        ...c,
+        processes: c.processes.map(p => p.key === procKey ? { ...p, enabled: on } : p),
+      }));
     }
   };
-
-  const setRate = (key: keyof GlobalRates, val: number) =>
-    setCostConfig(c => ({ ...c, rates: { ...c.rates, [key]: val } }));
-
-  const rows: Array<{ key: ProcKey | 'finishing'; label: string; pph: number; unitCost: number }> = [
-    { key: 'laser',    label: 'Laser / Turret',         pph: bd.laserPcsPerHour,   unitCost: bd.cuttingUnit },
-    { key: 'bending',  label: `CNC Bend (${analysis.bend_count})`, pph: bd.bendingPcsPerHour, unitCost: bd.bendingUnit },
-    { key: 'welding',  label: 'Welding',                pph: bd.weldingPcsPerHour, unitCost: bd.weldingUnit },
-    { key: 'finishing',label: 'Finishing',              pph: 0,                    unitCost: bd.finishingUnit },
-    { key: 'packing',  label: 'Pack & Inspect',         pph: bd.packingPcsPerHour, unitCost: bd.packingUnit },
-  ];
 
   return (
     <div className="overflow-x-auto rounded-lg bg-zinc-900">
@@ -178,6 +205,7 @@ function CostTable({ bd, analysis, costConfig, setCostConfig, partId, purchasePa
             <th className="px-2 py-2 text-center font-medium">pcs/h</th>
             <th className="px-2 py-2 text-center font-medium">Setup min</th>
             <th className="px-2 py-2 text-center font-medium">Rate $/hr</th>
+            <th className="px-2 py-2 text-center font-medium">Flat $/u</th>
             <th className="px-3 py-2 text-center font-medium">Unit $</th>
           </tr>
         </thead>
@@ -189,57 +217,54 @@ function CostTable({ bd, analysis, costConfig, setCostConfig, partId, purchasePa
             <td className="px-2 py-2 text-center">
               <input type="number" min={0}
                 value={partId ? (costConfig.perComponent[partId]?.sheetCost ?? costConfig.sheetCost) : costConfig.sheetCost}
-                onChange={(e) => setGlobalSheetCost(Math.max(0, Number(e.target.value)))}
+                onChange={(e) => setSheetCost(Math.max(0, Number(e.target.value)))}
                 className="w-16 rounded border border-zinc-700 bg-zinc-800 px-1 py-0.5 text-center text-xs font-mono text-zinc-200" />
             </td>
+            <td className="px-2 py-2 text-center text-xs text-zinc-600">-</td>
             <td className="px-3 py-2 text-center font-mono text-zinc-200">${bd.materialUnit.toFixed(2)}</td>
           </tr>
-          {rows.map(({ key, label, pph, unitCost }) => {
-            const isFinishing = key === 'finishing';
-            const proc = procs[key];
+          {componentProcs.map(proc => {
+            const cost = bd.processUnits.find(u => u.key === proc.key);
             const enabled = proc.enabled;
             return (
-              <tr key={key} className="border-b border-zinc-800">
+              <tr key={proc.key} className="border-b border-zinc-800">
                 <td className="px-3 py-2">
                   <label className="flex cursor-pointer items-center gap-2 text-zinc-300">
                     <input type="checkbox" checked={enabled}
-                      onChange={(e) => isFinishing ? setFinishing('enabled', e.target.checked) : setProc(key as ProcKey, 'enabled', e.target.checked)}
+                      onChange={(e) => toggleProc(proc.key, e.target.checked)}
                       className="accent-blue-500" />
-                    <span className={enabled ? '' : 'text-zinc-600'}>{label}</span>
+                    <span className={enabled ? '' : 'text-zinc-600'}>{proc.label}</span>
+                    {proc.autoFrom !== 'none' && proc.pcsPerHour === 0 && (
+                      <span className="text-[9px] text-zinc-600 uppercase">auto</span>
+                    )}
                   </label>
                 </td>
                 <td className="px-2 py-2 text-center">
-                  {isFinishing ? <span className="text-xs text-zinc-600">-</span> : (
-                    <input type="number" min={0} disabled={!enabled}
-                      value={(proc as ProcessConfig).pcsPerHour || Math.round(pph)}
-                      onChange={(e) => setProc(key as ProcKey, 'pcsPerHour', Math.max(0, Number(e.target.value)))}
-                      className="w-14 rounded border border-zinc-700 bg-zinc-800 px-1 py-0.5 text-center text-xs font-mono text-zinc-200 disabled:opacity-35" />
-                  )}
+                  <input type="number" min={0} disabled={!enabled}
+                    value={proc.pcsPerHour || Math.round(cost?.pcsPerHour ?? 0)}
+                    onChange={(e) => tuneProc(proc.key, 'pcsPerHour', Math.max(0, Number(e.target.value)))}
+                    className="w-14 rounded border border-zinc-700 bg-zinc-800 px-1 py-0.5 text-center text-xs font-mono text-zinc-200 disabled:opacity-35" />
                 </td>
                 <td className="px-2 py-2 text-center">
-                  {isFinishing ? <span className="text-xs text-zinc-600">-</span> : (
-                    <input type="number" min={0} disabled={!enabled}
-                      value={(proc as ProcessConfig).setupMin}
-                      onChange={(e) => setProc(key as ProcKey, 'setupMin', Math.max(0, Number(e.target.value)))}
-                      className="w-12 rounded border border-zinc-700 bg-zinc-800 px-1 py-0.5 text-center text-xs font-mono text-zinc-200 disabled:opacity-35" />
-                  )}
+                  <input type="number" min={0} disabled={!enabled}
+                    value={proc.setupMin}
+                    onChange={(e) => tuneProc(proc.key, 'setupMin', Math.max(0, Number(e.target.value)))}
+                    className="w-12 rounded border border-zinc-700 bg-zinc-800 px-1 py-0.5 text-center text-xs font-mono text-zinc-200 disabled:opacity-35" />
                 </td>
                 <td className="px-2 py-2 text-center">
-                  {isFinishing ? (
-                    <input type="number" min={0} disabled={!enabled}
-                      value={(proc as FinishingConfig).costPerUnit}
-                      onChange={(e) => setFinishing('costPerUnit', Math.max(0, Number(e.target.value)))}
-                      className="w-16 rounded border border-zinc-700 bg-zinc-800 px-1 py-0.5 text-center text-xs font-mono text-zinc-200 disabled:opacity-35"
-                      placeholder="$ flat" />
-                  ) : (
-                    <input type="number" min={0} disabled={!enabled}
-                      value={costConfig.rates[key as keyof GlobalRates] as number}
-                      onChange={(e) => setRate(key as keyof GlobalRates, Math.max(0, Number(e.target.value)))}
-                      className="w-14 rounded border border-zinc-700 bg-zinc-800 px-1 py-0.5 text-center text-xs font-mono text-zinc-200 disabled:opacity-35" />
-                  )}
+                  <input type="number" min={0} disabled={!enabled}
+                    value={proc.rate}
+                    onChange={(e) => tuneProc(proc.key, 'rate', Math.max(0, Number(e.target.value)))}
+                    className="w-14 rounded border border-zinc-700 bg-zinc-800 px-1 py-0.5 text-center text-xs font-mono text-zinc-200 disabled:opacity-35" />
+                </td>
+                <td className="px-2 py-2 text-center">
+                  <input type="number" min={0} disabled={!enabled}
+                    value={proc.flatCostPerUnit}
+                    onChange={(e) => tuneProc(proc.key, 'flatCostPerUnit', Math.max(0, Number(e.target.value)))}
+                    className="w-14 rounded border border-zinc-700 bg-zinc-800 px-1 py-0.5 text-center text-xs font-mono text-zinc-200 disabled:opacity-35" />
                 </td>
                 <td className="px-3 py-2 text-center font-mono text-zinc-200">
-                  {enabled ? `$${unitCost.toFixed(2)}` : '-'}
+                  {enabled ? `$${(cost?.unitCost ?? 0).toFixed(2)}` : '-'}
                 </td>
               </tr>
             );
@@ -247,13 +272,13 @@ function CostTable({ bd, analysis, costConfig, setCostConfig, partId, purchasePa
           {purchasePartsCost > 0 && (
             <tr className="border-b border-zinc-800">
               <td className="px-3 py-2 text-zinc-400">Purchase Parts</td>
-              <td colSpan={3} className="px-2 py-2 text-center text-xs text-zinc-600">-</td>
+              <td colSpan={4} className="px-2 py-2 text-center text-xs text-zinc-600">-</td>
               <td className="px-3 py-2 text-center font-mono text-zinc-200">${purchasePartsCost.toFixed(2)}</td>
             </tr>
           )}
           <tr className="border-b border-zinc-700 bg-zinc-800/60">
             <td className="px-3 py-2 font-medium text-zinc-200">Total / unit</td>
-            <td colSpan={3} />
+            <td colSpan={4} />
             <td className="px-3 py-2 text-center font-mono font-semibold text-white">
               ${(bd.totalUnit + purchasePartsCost).toFixed(2)}
             </td>
@@ -264,13 +289,52 @@ function CostTable({ bd, analysis, costConfig, setCostConfig, partId, purchasePa
   );
 }
 
-function RatesEditor({ costConfig, setCostConfig }: {
+function ProcessCatalogEditor({ costConfig, setCostConfig }: {
   costConfig: CostConfig;
   setCostConfig: React.Dispatch<React.SetStateAction<CostConfig>>;
 }) {
   const [open, setOpen] = React.useState(false);
-  const setRate = (key: keyof GlobalRates, val: number) =>
-    setCostConfig(c => ({ ...c, rates: { ...c.rates, [key]: val } }));
+  const [activeTab, setActiveTab] = React.useState<'processes' | 'materials' | 'sheets' | 'auto'>('processes');
+
+  const updProc = (key: string, field: keyof ProcessDef, val: string | number | boolean) =>
+    setCostConfig(c => ({
+      ...c,
+      processes: c.processes.map(p => p.key === key ? { ...p, [field]: val } : p),
+    }));
+
+  const moveProc = (key: string, delta: -1 | 1) =>
+    setCostConfig(c => {
+      const i = c.processes.findIndex(p => p.key === key);
+      if (i < 0) return c;
+      const j = i + delta;
+      if (j < 0 || j >= c.processes.length) return c;
+      const arr = [...c.processes];
+      [arr[i], arr[j]] = [arr[j], arr[i]];
+      return { ...c, processes: arr };
+    });
+
+  const addProc = (phase: ProcessPhase) =>
+    setCostConfig(c => {
+      const key = `custom_${Date.now()}`;
+      const newProc: ProcessDef = {
+        key,
+        label: 'New Process',
+        phase,
+        enabled: true,
+        rate: 100,
+        pcsPerHour: 60,
+        setupMin: 10,
+        flatCostPerUnit: 0,
+        autoFrom: 'none',
+        mlbProcLabel: 'Proc',
+        custom: true,
+      };
+      return { ...c, processes: [...c.processes, newProc] };
+    });
+
+  const delProc = (key: string) =>
+    setCostConfig(c => ({ ...c, processes: c.processes.filter(p => p.key !== key) }));
+
   const setMat = (i: number, field: keyof MaterialConfig, val: string | number) =>
     setCostConfig(c => { const m = [...c.materials]; m[i] = { ...m[i], [field]: val }; return { ...c, materials: m }; });
   const addMat = () => setCostConfig(c => ({
@@ -290,51 +354,114 @@ function RatesEditor({ costConfig, setCostConfig }: {
     return { ...c, sheets, sheetIndex: Math.min(c.sheetIndex, Math.max(0, sheets.length - 1)) };
   });
 
+  const phases: { key: ProcessPhase; label: string }[] = [
+    { key: 'post-assembly', label: 'Post-Assembly (outermost in BOM)' },
+    { key: 'pre-assembly',  label: 'Pre-Assembly (component joining)' },
+    { key: 'component',     label: 'Component (per-part)' },
+  ];
+
   return (
     <div className="rounded-lg border border-zinc-800">
       <button onClick={() => setOpen(o => !o)}
         className="w-full flex items-center justify-between px-3 py-2 text-xs font-medium text-zinc-400 hover:text-zinc-200">
-        <span>Rates &amp; Materials</span>
+        <span>Process Catalog · Materials · Sheets</span>
         <span>{open ? '▲' : '▼'}</span>
       </button>
       {open && (
-        <div className="border-t border-zinc-800 p-3 flex flex-col gap-4">
-          {/* Machine rates */}
-          <div>
-            <div className="text-[10px] uppercase tracking-wider text-zinc-500 mb-2">Machine Rates (AUD/hr)</div>
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
-              {([
-                ['laser',   'Laser'],
-                ['bending', 'Bending'],
-                ['welding', 'Welding'],
-                ['packing', 'Packing'],
-              ] as [keyof GlobalRates, string][]).map(([key, label]) => (
-                <label key={key} className="flex items-center gap-2 text-xs text-zinc-400">
-                  <span className="w-16">{label}</span>
-                  <input type="number" min={0} value={costConfig.rates[key] as number}
-                    onChange={(e) => setRate(key, Math.max(0, Number(e.target.value)))}
-                    className="w-16 rounded border border-zinc-700 bg-zinc-800 px-1 py-0.5 text-center text-xs font-mono text-zinc-200" />
-                </label>
-              ))}
-              <label className="flex items-center gap-2 text-xs text-zinc-400">
-                <span className="w-16">sec/bend</span>
-                <input type="number" min={0} value={costConfig.rates.secPerBend}
-                  onChange={(e) => setRate('secPerBend', Math.max(0, Number(e.target.value)))}
-                  className="w-16 rounded border border-zinc-700 bg-zinc-800 px-1 py-0.5 text-center text-xs font-mono text-zinc-200" />
-              </label>
-              <label className="flex items-center gap-2 text-xs text-zinc-400">
-                <span className="w-16">Weld mm/min</span>
-                <input type="number" min={0} value={costConfig.rates.weldSpeedMmPerMin}
-                  onChange={(e) => setRate('weldSpeedMmPerMin', Math.max(0, Number(e.target.value)))}
-                  className="w-16 rounded border border-zinc-700 bg-zinc-800 px-1 py-0.5 text-center text-xs font-mono text-zinc-200" />
-              </label>
-            </div>
+        <div className="border-t border-zinc-800 flex flex-col">
+          <div className="flex border-b border-zinc-800 px-3">
+            {(['processes', 'materials', 'sheets', 'auto'] as const).map(t => (
+              <button key={t} onClick={() => setActiveTab(t)}
+                className={`px-3 py-1.5 text-xs font-medium border-b-2 transition-colors capitalize ${activeTab === t ? 'border-blue-500 text-blue-300' : 'border-transparent text-zinc-500 hover:text-zinc-300'}`}>
+                {t === 'auto' ? 'Auto Params' : t}
+              </button>
+            ))}
           </div>
 
-          {/* Materials */}
-          <div>
-            <div className="text-[10px] uppercase tracking-wider text-zinc-500 mb-2">Materials</div>
-            <div className="flex flex-col gap-1">
+          {activeTab === 'processes' && (
+            <div className="p-3 flex flex-col gap-3">
+              {phases.map(phase => {
+                const inPhase = costConfig.processes.filter(p => p.phase === phase.key);
+                return (
+                  <div key={phase.key} className="rounded border border-zinc-800 p-2">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-[10px] uppercase tracking-wider text-zinc-500">{phase.label}</span>
+                      <button onClick={() => addProc(phase.key)}
+                        className="text-xs text-zinc-500 hover:text-zinc-200">+ Add process</button>
+                    </div>
+                    {inPhase.length === 0 ? (
+                      <div className="text-xs text-zinc-600 italic">No processes in this phase</div>
+                    ) : (
+                      <div className="flex flex-col gap-1">
+                        <div className="grid grid-cols-[18px_18px_1fr_60px_60px_60px_55px_55px_70px_70px_22px] gap-1 text-[9px] uppercase text-zinc-600 px-1">
+                          <span /><span />
+                          <span>Label</span>
+                          <span className="text-center">MLB tag</span>
+                          <span className="text-center">Rate $/h</span>
+                          <span className="text-center">pcs/h</span>
+                          <span className="text-center">Setup</span>
+                          <span className="text-center">Flat $/u</span>
+                          <span className="text-center">Auto</span>
+                          <span className="text-center">On</span>
+                          <span />
+                        </div>
+                        {inPhase.map(p => {
+                          const globalIdx = costConfig.processes.findIndex(x => x.key === p.key);
+                          return (
+                            <div key={p.key} className="grid grid-cols-[18px_18px_1fr_60px_60px_60px_55px_55px_70px_70px_22px] gap-1 items-center">
+                              <button onClick={() => moveProc(p.key, -1)} disabled={globalIdx === 0}
+                                className="text-xs text-zinc-500 hover:text-zinc-200 disabled:opacity-20">↑</button>
+                              <button onClick={() => moveProc(p.key, 1)} disabled={globalIdx >= costConfig.processes.length - 1}
+                                className="text-xs text-zinc-500 hover:text-zinc-200 disabled:opacity-20">↓</button>
+                              <input value={p.label} onChange={(e) => updProc(p.key, 'label', e.target.value)}
+                                className="rounded border border-zinc-700 bg-zinc-800 px-2 py-0.5 text-xs text-zinc-200" />
+                              <input value={p.mlbProcLabel} onChange={(e) => updProc(p.key, 'mlbProcLabel', e.target.value)}
+                                className="rounded border border-zinc-700 bg-zinc-800 px-1 py-0.5 text-center text-xs font-mono text-zinc-200" />
+                              <input type="number" min={0} value={p.rate}
+                                onChange={(e) => updProc(p.key, 'rate', Number(e.target.value))}
+                                className="rounded border border-zinc-700 bg-zinc-800 px-1 py-0.5 text-center text-xs font-mono text-zinc-200" />
+                              <input type="number" min={0} value={p.pcsPerHour}
+                                onChange={(e) => updProc(p.key, 'pcsPerHour', Number(e.target.value))}
+                                className="rounded border border-zinc-700 bg-zinc-800 px-1 py-0.5 text-center text-xs font-mono text-zinc-200" />
+                              <input type="number" min={0} value={p.setupMin}
+                                onChange={(e) => updProc(p.key, 'setupMin', Number(e.target.value))}
+                                className="rounded border border-zinc-700 bg-zinc-800 px-1 py-0.5 text-center text-xs font-mono text-zinc-200" />
+                              <input type="number" min={0} value={p.flatCostPerUnit}
+                                onChange={(e) => updProc(p.key, 'flatCostPerUnit', Number(e.target.value))}
+                                className="rounded border border-zinc-700 bg-zinc-800 px-1 py-0.5 text-center text-xs font-mono text-zinc-200" />
+                              <select value={p.autoFrom} onChange={(e) => updProc(p.key, 'autoFrom', e.target.value)}
+                                className="rounded border border-zinc-700 bg-zinc-800 px-1 py-0.5 text-xs text-zinc-200">
+                                <option value="none">manual</option>
+                                <option value="perimeter">perim</option>
+                                <option value="bend_count">bend#</option>
+                                <option value="weld_length">weld</option>
+                              </select>
+                              <label className="flex items-center justify-center">
+                                <input type="checkbox" checked={p.enabled}
+                                  onChange={(e) => updProc(p.key, 'enabled', e.target.checked)}
+                                  className="accent-blue-500" />
+                              </label>
+                              <button onClick={() => delProc(p.key)}
+                                className="text-xs text-zinc-600 hover:text-red-400">×</button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {activeTab === 'materials' && (
+            <div className="p-3 flex flex-col gap-1">
+              <div className="grid grid-cols-[1fr_80px_90px_28px] gap-1 px-1">
+                <span className="text-[10px] text-zinc-600">Name</span>
+                <span className="text-[10px] text-zinc-600 text-center">kg/m³</span>
+                <span className="text-[10px] text-zinc-600 text-center">mm/min</span>
+                <span />
+              </div>
               {costConfig.materials.map((mat, i) => (
                 <div key={mat.id} className="grid grid-cols-[1fr_80px_90px_28px] gap-1 items-center">
                   <input value={mat.label} onChange={(e) => setMat(i, 'label', e.target.value)}
@@ -349,20 +476,13 @@ function RatesEditor({ costConfig, setCostConfig }: {
                     className="text-xs text-zinc-600 hover:text-red-400 disabled:opacity-20">×</button>
                 </div>
               ))}
-              <div className="grid grid-cols-[1fr_80px_90px_28px] gap-1 mt-0.5">
-                <span className="text-[10px] text-zinc-600 px-1">Name</span>
-                <span className="text-[10px] text-zinc-600 text-center">kg/m³</span>
-                <span className="text-[10px] text-zinc-600 text-center">mm/min</span>
-              </div>
               <button onClick={addMat}
                 className="text-xs text-zinc-500 hover:text-zinc-300 text-left px-1 mt-1">+ Add material</button>
             </div>
-          </div>
+          )}
 
-          {/* Sheet sizes */}
-          <div>
-            <div className="text-[10px] uppercase tracking-wider text-zinc-500 mb-2">Sheet Sizes</div>
-            <div className="flex flex-col gap-1">
+          {activeTab === 'sheets' && (
+            <div className="p-3 flex flex-col gap-1">
               {costConfig.sheets.map((sh, i) => (
                 <div key={i} className="grid grid-cols-[1fr_70px_70px_28px] gap-1 items-center">
                   <input value={sh.label} onChange={(e) => setSheet(i, 'label', e.target.value)}
@@ -380,8 +500,82 @@ function RatesEditor({ costConfig, setCostConfig }: {
               <button onClick={addSheet}
                 className="text-xs text-zinc-500 hover:text-zinc-300 text-left px-1 mt-1">+ Add sheet size</button>
             </div>
-          </div>
+          )}
+
+          {activeTab === 'auto' && (
+            <div className="p-3 flex flex-col gap-2">
+              <label className="flex items-center gap-2 text-xs text-zinc-400">
+                <span className="w-32">Bend cycle (sec)</span>
+                <input type="number" min={0} value={costConfig.autoParams.secPerBend}
+                  onChange={(e) => setCostConfig(c => ({ ...c, autoParams: { ...c.autoParams, secPerBend: Number(e.target.value) } }))}
+                  className="w-16 rounded border border-zinc-700 bg-zinc-800 px-1 py-0.5 text-center text-xs font-mono text-zinc-200" />
+              </label>
+              <label className="flex items-center gap-2 text-xs text-zinc-400">
+                <span className="w-32">Weld speed (mm/min)</span>
+                <input type="number" min={0} value={costConfig.autoParams.weldSpeedMmPerMin}
+                  onChange={(e) => setCostConfig(c => ({ ...c, autoParams: { ...c.autoParams, weldSpeedMmPerMin: Number(e.target.value) } }))}
+                  className="w-16 rounded border border-zinc-700 bg-zinc-800 px-1 py-0.5 text-center text-xs font-mono text-zinc-200" />
+              </label>
+              <div className="text-[10px] text-zinc-600 mt-1">Material laser speed: edit in Materials tab</div>
+            </div>
+          )}
         </div>
+      )}
+    </div>
+  );
+}
+
+function ManualPurchasePartsEditor({ costConfig, setCostConfig }: {
+  costConfig: CostConfig;
+  setCostConfig: React.Dispatch<React.SetStateAction<CostConfig>>;
+}) {
+  const upd = (id: string, field: keyof ManualPurchasePart, val: string | number) =>
+    setCostConfig(c => ({
+      ...c,
+      manualPurchaseParts: c.manualPurchaseParts.map(m => m.id === id ? { ...m, [field]: val } : m),
+    }));
+  const add = () => setCostConfig(c => ({
+    ...c,
+    manualPurchaseParts: [...c.manualPurchaseParts, {
+      id: `mpp_${Date.now()}`, partNumber: 'PURCH-NEW', description: 'Purchase Part', qty: 1, unitCost: 0,
+    }],
+  }));
+  const del = (id: string) => setCostConfig(c => ({
+    ...c,
+    manualPurchaseParts: c.manualPurchaseParts.filter(m => m.id !== id),
+  }));
+
+  return (
+    <div className="rounded-lg border border-zinc-800 p-3 flex flex-col gap-2">
+      <div className="flex items-center justify-between">
+        <span className="text-[10px] uppercase tracking-wider text-zinc-500">Manual Purchase Parts</span>
+        <button onClick={add} className="text-xs text-zinc-500 hover:text-zinc-200">+ Add</button>
+      </div>
+      {costConfig.manualPurchaseParts.length === 0 ? (
+        <div className="text-xs text-zinc-600 italic">None — add bought-in items (studs, fasteners, inserts...)</div>
+      ) : (
+        <>
+          <div className="grid grid-cols-[100px_1fr_50px_70px_28px] gap-1 text-[9px] uppercase text-zinc-600 px-1">
+            <span>Part #</span><span>Description</span>
+            <span className="text-center">Qty</span><span className="text-center">$ unit</span>
+            <span />
+          </div>
+          {costConfig.manualPurchaseParts.map(mpp => (
+            <div key={mpp.id} className="grid grid-cols-[100px_1fr_50px_70px_28px] gap-1 items-center">
+              <input value={mpp.partNumber} onChange={(e) => upd(mpp.id, 'partNumber', e.target.value)}
+                className="rounded border border-zinc-700 bg-zinc-800 px-2 py-0.5 text-xs font-mono text-zinc-200" />
+              <input value={mpp.description} onChange={(e) => upd(mpp.id, 'description', e.target.value)}
+                className="rounded border border-zinc-700 bg-zinc-800 px-2 py-0.5 text-xs text-zinc-200" />
+              <input type="number" min={0} value={mpp.qty}
+                onChange={(e) => upd(mpp.id, 'qty', Number(e.target.value))}
+                className="rounded border border-zinc-700 bg-zinc-800 px-1 py-0.5 text-center text-xs font-mono text-zinc-200" />
+              <input type="number" min={0} step={0.01} value={mpp.unitCost}
+                onChange={(e) => upd(mpp.id, 'unitCost', Number(e.target.value))}
+                className="rounded border border-zinc-700 bg-zinc-800 px-1 py-0.5 text-center text-xs font-mono text-zinc-200" />
+              <button onClick={() => del(mpp.id)} className="text-xs text-zinc-600 hover:text-red-400">×</button>
+            </div>
+          ))}
+        </>
       )}
     </div>
   );
@@ -401,8 +595,6 @@ function Home() {
   const [bomDescription, setBomDescription] = useState("");
   const [materialNumber, setMaterialNumber] = useState("MAT-001");
   const [materialDescription, setMaterialDescription] = useState("MILD STEEL");
-  const [finishCode, setFinishCode] = useState("E");
-  const [finishLabel, setFinishLabel] = useState("E-COAT");
   const [mlbRows, setMlbRows] = useState<BomRow[]>([]);
   const [isAssembly, setIsAssembly] = useState(false);
   const [assemblyApiComps, setAssemblyApiComps] = useState<ApiComp[]>([]);
@@ -428,36 +620,24 @@ function Home() {
       calculateCost(analysis, resolveComponentConfig(costConfig, comp.part_number))
     );
   }, [analysis, isAssembly, sheetMetalComps, costConfig]);
-  const assemblyOpsCost = useMemo(() => {
-    if (!isAssembly) return 0;
-    const { assemblyOps, rates, processes, moq } = costConfig;
-    let total = 0;
-    if (assemblyOps.welding) {
-      const weldRunMin = costConfig.weldLengthMm / rates.weldSpeedMmPerMin;
-      const weldPph = processes.welding.pcsPerHour > 0
-        ? processes.welding.pcsPerHour
-        : weldRunMin > 0 ? 60 / weldRunMin : 0;
-      if (weldPph > 0) {
-        total += rates.welding / weldPph
-          + (processes.welding.setupMin / 60) * rates.welding / Math.max(moq, 1);
-      }
-    }
-    if (assemblyOps.finishing) {
-      total += Math.max(0, assemblyOps.finishCostPerUnit);
-    }
-    return total;
+  // Per-process cost rows for pre/post-assembly processes that are enabled (assembly level)
+  const assemblyProcCosts = useMemo(() => {
+    if (!isAssembly) return [] as { key: string; label: string; phase: ProcessDef['phase']; unitCost: number; mlbProcLabel: string }[];
+    return costConfig.processes
+      .filter(p => p.enabled && (p.phase === 'pre-assembly' || p.phase === 'post-assembly'))
+      .map(p => ({ key: p.key, label: p.label, phase: p.phase, mlbProcLabel: p.mlbProcLabel,
+                   unitCost: calculateAssemblyProcessCost(p, costConfig) }));
   }, [isAssembly, costConfig]);
+  const assemblyOpsCost = useMemo(() => assemblyProcCosts.reduce((s, p) => s + p.unitCost, 0), [assemblyProcCosts]);
+  // Manual purchase parts total
+  const manualPurchaseCost = useMemo(
+    () => costConfig.manualPurchaseParts.reduce((s, m) => s + (m.qty || 0) * (m.unitCost || 0), 0),
+    [costConfig.manualPurchaseParts],
+  );
+  // Single-part: derive stages from currently-enabled component processes
   const bomStages = useMemo(
-    () => buildProcessStages(
-      {
-        laser:    costConfig.processes.laser.enabled,
-        bending:  costConfig.processes.bending.enabled,
-        welding:  costConfig.processes.welding.enabled,
-        finishing:costConfig.processes.finishing.enabled,
-      },
-      finishCode, finishLabel,
-    ),
-    [costConfig.processes, finishCode, finishLabel],
+    () => buildProcessStages(costConfig.processes),
+    [costConfig.processes],
   );
   const generatedBomRows = useMemo(
     () =>
@@ -556,43 +736,23 @@ function Home() {
 
   useEffect(() => {
     if (!isAssembly || assemblyApiComps.length === 0) return;
-    const stages = buildProcessStages(
-      {
-        laser:    costConfig.processes.laser.enabled,
-        bending:  costConfig.processes.bending.enabled,
-        welding:  costConfig.processes.welding.enabled,
-        finishing:costConfig.processes.finishing.enabled,
-      },
-      finishCode, finishLabel,
-    );
     const newRows = buildAssemblyMlbRows(
-      assemblyApiComps, stages, materialNumber, materialDescription,
-      costConfig.assemblyOps,
+      assemblyApiComps, costConfig, materialNumber, materialDescription,
     );
     setMlbRows(prev => prev.length === 0 ? newRows : mergeAssemblyRows(newRows, prev));
-  // costConfig.processes + assemblyOps intentionally omitted — only trigger on assembly change
-  // Process/ops changes are handled by the separate effect below
+  // costConfig intentionally omitted — only trigger on assembly change (new STEP load)
+  // Catalog changes handled by separate effect below
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAssembly, assemblyApiComps]);
 
-  // Rebuild assembly rows when process toggles or assembly ops change (preserves user edits)
+  // Rebuild assembly rows when process catalog or manual purchase parts change (preserves user edits)
   useEffect(() => {
     if (!isAssembly || assemblyApiComps.length === 0) return;
-    const stages = buildProcessStages(
-      {
-        laser:    costConfig.processes.laser.enabled,
-        bending:  costConfig.processes.bending.enabled,
-        welding:  costConfig.processes.welding.enabled,
-        finishing:costConfig.processes.finishing.enabled,
-      },
-      finishCode, finishLabel,
-    );
     const newRows = buildAssemblyMlbRows(
-      assemblyApiComps, stages, materialNumber, materialDescription,
-      costConfig.assemblyOps,
+      assemblyApiComps, costConfig, materialNumber, materialDescription,
     );
     setMlbRows(prev => mergeAssemblyRows(newRows, prev));
-  }, [costConfig.processes, costConfig.assemblyOps, finishCode, finishLabel]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [costConfig.processes, costConfig.manualPurchaseParts, costConfig.perComponent]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const loadMesh = useCallback(
     async (nextFile: File) => {
@@ -621,7 +781,7 @@ function Home() {
           const comps: ApiComp[] = data.components;
           setIsAssembly(true);
           setAssemblyApiComps(comps);
-          setActiveCostTab(0);
+          setActiveCostTab(-1);
           const root = comps.find(c => c.level === 0);
           if (root) {
             setBomPartNumber(root.part_number);
@@ -950,11 +1110,9 @@ function Home() {
     setBomDescription("");
     setMaterialNumber("MAT-001");
     setMaterialDescription("MILD STEEL");
-    setFinishCode("E");
-    setFinishLabel("E-COAT");
     setIsAssembly(false);
     setAssemblyApiComps([]);
-    setActiveCostTab(0);
+    setActiveCostTab(-1);
     setCostConfig(DEFAULT_COST_CONFIG);
   };
 
@@ -1163,7 +1321,7 @@ function Home() {
                     )}
                   </div>
 
-                  {(isAssembly ? costConfig.assemblyOps.welding : costConfig.processes.welding.enabled) && (
+                  {costConfig.processes.some(p => p.enabled && p.autoFrom === 'weld_length') && (
                     <div className="flex items-center justify-between gap-3 rounded-lg bg-zinc-900 px-3 py-2">
                       <label className="text-xs text-zinc-500">Weld length (mm)</label>
                       <input type="number" min={0} value={costConfig.weldLengthMm}
@@ -1174,21 +1332,93 @@ function Home() {
 
                   {isAssembly && sheetMetalComps.length > 0 ? (
                     <>
-                      {/* Component tabs */}
+                      {/* Tabs: Assembly first, then components */}
                       <div className="flex border-b border-zinc-700 gap-0 flex-wrap">
+                        <button onClick={() => setActiveCostTab(-1)}
+                          className={`px-3 py-1.5 text-xs font-bold border-b-2 transition-colors ${activeCostTab === -1 ? 'border-blue-500 text-blue-300' : 'border-transparent text-zinc-400 hover:text-zinc-200'}`}>
+                          📊 Assembly
+                        </button>
                         {sheetMetalComps.map((comp, i) => (
                           <button key={i} onClick={() => setActiveCostTab(i)}
                             className={`px-3 py-1.5 text-xs font-medium border-b-2 transition-colors ${activeCostTab === i ? 'border-blue-500 text-blue-300' : 'border-transparent text-zinc-500 hover:text-zinc-300'}`}>
                             {compLabel(comp)}
                           </button>
                         ))}
-                        <button onClick={() => setActiveCostTab(sheetMetalComps.length)}
-                          className={`px-3 py-1.5 text-xs font-medium border-b-2 transition-colors ${activeCostTab === sheetMetalComps.length ? 'border-blue-500 text-blue-300' : 'border-transparent text-zinc-500 hover:text-zinc-300'}`}>
-                          Assembly Total
-                        </button>
                       </div>
 
-                      {activeCostTab < sheetMetalComps.length ? (() => {
+                      {activeCostTab === -1 ? (
+                        // Assembly Total tab — components summary + dynamic pre/post-asm processes + manual purchase parts
+                        <div className="flex flex-col gap-3">
+                          <table className="w-full text-sm">
+                            <thead>
+                              <tr className="border-b border-zinc-800 text-xs text-zinc-500">
+                                <th className="px-3 py-2 text-left font-medium">Component / Operation</th>
+                                <th className="px-3 py-2 text-center font-medium">Qty</th>
+                                <th className="px-3 py-2 text-right font-medium">Unit Cost</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              <tr>
+                                <td colSpan={3} className="px-3 pt-2 pb-1 text-[10px] font-medium uppercase tracking-wider text-zinc-500">Sheet-Metal Components</td>
+                              </tr>
+                              {sheetMetalComps.map((comp, i) => (
+                                <tr key={i} className="border-b border-zinc-800 hover:bg-zinc-800/40 cursor-pointer"
+                                  onClick={() => setActiveCostTab(i)}>
+                                  <td className="px-3 py-2 text-zinc-300 text-xs">{compLabel(comp)}</td>
+                                  <td className="px-3 py-2 text-center text-xs text-zinc-400">1</td>
+                                  <td className="px-3 py-2 text-right font-mono text-zinc-200">${compBreakdowns[i]?.totalUnit.toFixed(2) ?? '—'}</td>
+                                </tr>
+                              ))}
+                              {assemblyApiComps.filter(c => c.type === 'purchase').length > 0 && (
+                                <tr>
+                                  <td colSpan={3} className="px-3 pt-2 pb-1 text-[10px] font-medium uppercase tracking-wider text-zinc-500">Parsed Purchase Parts (from STEP)</td>
+                                </tr>
+                              )}
+                              {assemblyApiComps.filter(c => c.type === 'purchase').map((comp, i) => (
+                                <tr key={`p${i}`} className="border-b border-zinc-800">
+                                  <td className="px-3 py-2 text-zinc-400 text-xs">{compLabel(comp)}</td>
+                                  <td className="px-3 py-2 text-center text-xs text-zinc-600">1</td>
+                                  <td className="px-3 py-2 text-right font-mono text-xs text-zinc-500">edit in MLB →</td>
+                                </tr>
+                              ))}
+                              {costConfig.manualPurchaseParts.length > 0 && (
+                                <tr>
+                                  <td colSpan={3} className="px-3 pt-2 pb-1 text-[10px] font-medium uppercase tracking-wider text-zinc-500">Manual Purchase Parts</td>
+                                </tr>
+                              )}
+                              {costConfig.manualPurchaseParts.map(mpp => (
+                                <tr key={mpp.id} className="border-b border-zinc-800">
+                                  <td className="px-3 py-2 text-zinc-300 text-xs">{mpp.description || mpp.partNumber}</td>
+                                  <td className="px-3 py-2 text-center text-xs text-zinc-400">{mpp.qty}</td>
+                                  <td className="px-3 py-2 text-right font-mono text-zinc-200">${(mpp.qty * mpp.unitCost).toFixed(2)}</td>
+                                </tr>
+                              ))}
+                              {assemblyProcCosts.length > 0 && (
+                                <tr>
+                                  <td colSpan={3} className="px-3 pt-2 pb-1 text-[10px] font-medium uppercase tracking-wider text-zinc-500">Assembly Operations (pre + post)</td>
+                                </tr>
+                              )}
+                              {assemblyProcCosts.map(p => (
+                                <tr key={p.key} className="border-b border-zinc-800">
+                                  <td className="px-3 py-2 text-zinc-300 text-xs">
+                                    {p.label} <span className="text-[9px] text-zinc-600 uppercase">({p.phase.replace('-assembly', '')})</span>
+                                  </td>
+                                  <td className="px-3 py-2 text-center text-xs text-zinc-600">—</td>
+                                  <td className="px-3 py-2 text-right font-mono text-zinc-200">${p.unitCost.toFixed(2)}</td>
+                                </tr>
+                              ))}
+                              <tr className="bg-zinc-800/60">
+                                <td className="px-3 py-2 font-medium text-zinc-200">Total / unit</td>
+                                <td />
+                                <td className="px-3 py-2 text-right font-mono font-semibold text-white">
+                                  ${(compBreakdowns.reduce((s, b) => s + b.totalUnit, 0) + purchasePartsCost + manualPurchaseCost + assemblyOpsCost).toFixed(2)}
+                                </td>
+                              </tr>
+                            </tbody>
+                          </table>
+                          <ManualPurchasePartsEditor costConfig={costConfig} setCostConfig={setCostConfig} />
+                        </div>
+                      ) : (() => {
                         const comp = sheetMetalComps[activeCostTab];
                         const bd = compBreakdowns[activeCostTab];
                         if (!bd || !comp) return null;
@@ -1215,90 +1445,7 @@ function Home() {
                             <CostTable bd={bd} analysis={analysis} costConfig={resolved} setCostConfig={setCostConfig} partId={comp.part_number} purchasePartsCost={0} />
                           </div>
                         );
-                      })() : (
-                        // Assembly Total tab
-                        <div className="flex flex-col gap-2">
-                          <table className="w-full text-sm">
-                            <thead>
-                              <tr className="border-b border-zinc-800 text-xs text-zinc-500">
-                                <th className="px-3 py-2 text-left font-medium">Component</th>
-                                <th className="px-3 py-2 text-center font-medium">t (mm)</th>
-                                <th className="px-3 py-2 text-right font-medium">Unit Cost</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {sheetMetalComps.map((comp, i) => (
-                                <tr key={i} className="border-b border-zinc-800">
-                                  <td className="px-3 py-2 text-zinc-300 text-xs">{compLabel(comp)}</td>
-                                  <td className="px-3 py-2 text-center font-mono text-xs text-zinc-400">
-                                    {costConfig.perComponent[comp.part_number]?.thicknessMm ?? analysis.thickness_mm}
-                                  </td>
-                                  <td className="px-3 py-2 text-right font-mono text-zinc-200">${compBreakdowns[i]?.totalUnit.toFixed(2) ?? '—'}</td>
-                                </tr>
-                              ))}
-                              {assemblyApiComps.filter(c => c.type === 'purchase').map((comp, i) => (
-                                <tr key={`p${i}`} className="border-b border-zinc-800">
-                                  <td className="px-3 py-2 text-zinc-400 text-xs">{compLabel(comp)} <span className="text-zinc-600">(purchased)</span></td>
-                                  <td className="px-3 py-2 text-center text-xs text-zinc-600">—</td>
-                                  <td className="px-3 py-2 text-right font-mono text-xs text-zinc-500">enter in MLB</td>
-                                </tr>
-                              ))}
-                              {purchasePartsCost > 0 && (
-                                <tr className="border-b border-zinc-800">
-                                  <td className="px-3 py-2 text-zinc-400">Purchase parts total</td>
-                                  <td />
-                                  <td className="px-3 py-2 text-right font-mono text-zinc-200">${purchasePartsCost.toFixed(2)}</td>
-                                </tr>
-                              )}
-                              <tr>
-                                <td colSpan={3} className="px-3 pt-2 pb-1 text-[10px] font-medium uppercase tracking-wider text-zinc-500">Assembly Operations</td>
-                              </tr>
-                              <tr className="border-b border-zinc-800">
-                                <td className="px-3 py-2 text-zinc-300 text-xs">
-                                  <label className="flex items-center gap-2 cursor-pointer">
-                                    <input type="checkbox" checked={costConfig.assemblyOps.welding}
-                                      onChange={(e) => setCostConfig(c => ({ ...c, assemblyOps: { ...c.assemblyOps, welding: e.target.checked } }))}
-                                      className="accent-blue-500" />
-                                    Assembly Weld
-                                  </label>
-                                </td>
-                                <td className="px-3 py-2 text-center text-xs text-zinc-600">—</td>
-                                <td className="px-3 py-2 text-right font-mono text-zinc-200">
-                                  ${costConfig.assemblyOps.welding ? assemblyOpsCost.toFixed(2) : '0.00'}
-                                </td>
-                              </tr>
-                              <tr className="border-b border-zinc-800">
-                                <td className="px-3 py-2 text-zinc-300 text-xs">
-                                  <label className="flex items-center gap-2 cursor-pointer">
-                                    <input type="checkbox" checked={costConfig.assemblyOps.finishing}
-                                      onChange={(e) => setCostConfig(c => ({ ...c, assemblyOps: { ...c.assemblyOps, finishing: e.target.checked } }))}
-                                      className="accent-blue-500" />
-                                    {finishLabel || 'E-Coat / Finish'}
-                                  </label>
-                                </td>
-                                <td className="px-3 py-2 text-center">
-                                  {costConfig.assemblyOps.finishing && (
-                                    <input type="number" min={0} value={costConfig.assemblyOps.finishCostPerUnit}
-                                      onChange={(e) => setCostConfig(c => ({ ...c, assemblyOps: { ...c.assemblyOps, finishCostPerUnit: Math.max(0, Number(e.target.value)) } }))}
-                                      className="w-20 rounded border border-zinc-700 bg-zinc-800 px-1 py-0.5 text-center text-xs font-mono text-zinc-200"
-                                      placeholder="$ / unit" />
-                                  )}
-                                </td>
-                                <td className="px-3 py-2 text-right font-mono text-zinc-200">
-                                  ${costConfig.assemblyOps.finishing ? costConfig.assemblyOps.finishCostPerUnit.toFixed(2) : '0.00'}
-                                </td>
-                              </tr>
-                              <tr className="bg-zinc-800/60">
-                                <td className="px-3 py-2 font-medium text-zinc-200">Total / unit</td>
-                                <td />
-                                <td className="px-3 py-2 text-right font-mono font-semibold text-white">
-                                  ${(compBreakdowns.reduce((s, b) => s + b.totalUnit, 0) + purchasePartsCost + assemblyOpsCost).toFixed(2)}
-                                </td>
-                              </tr>
-                            </tbody>
-                          </table>
-                        </div>
-                      )}
+                      })()}
                     </>
                   ) : (
                     <>
@@ -1324,7 +1471,7 @@ function Home() {
                     </>
                   )}
 
-                  <RatesEditor costConfig={costConfig} setCostConfig={setCostConfig} />
+                  <ProcessCatalogEditor costConfig={costConfig} setCostConfig={setCostConfig} />
 
                   {/* Grand total */}
                   <div className="rounded-lg border border-blue-900/60 bg-blue-950/30 px-3 py-3">
@@ -1333,13 +1480,13 @@ function Home() {
                         <div className="text-xs text-zinc-400">Total x {costConfig.moq} MOQ</div>
                         <div className="mt-0.5 text-xs text-zinc-500">
                           {isAssembly
-                            ? `$${(compBreakdowns.reduce((s, b) => s + b.totalUnit, 0) + purchasePartsCost + assemblyOpsCost).toFixed(2)} / unit`
+                            ? `$${(compBreakdowns.reduce((s, b) => s + b.totalUnit, 0) + purchasePartsCost + manualPurchaseCost + assemblyOpsCost).toFixed(2)} / unit`
                             : `$${(costBreakdown.totalUnit + purchasePartsCost).toFixed(2)} / unit`}
                         </div>
                       </div>
                       <div className="text-right font-mono text-lg font-semibold text-blue-300">
                         {isAssembly
-                          ? `$${((compBreakdowns.reduce((s, b) => s + b.totalUnit, 0) + purchasePartsCost + assemblyOpsCost) * costConfig.moq).toFixed(2)}`
+                          ? `$${((compBreakdowns.reduce((s, b) => s + b.totalUnit, 0) + purchasePartsCost + manualPurchaseCost + assemblyOpsCost) * costConfig.moq).toFixed(2)}`
                           : `$${((costBreakdown.totalUnit + purchasePartsCost) * costConfig.moq).toFixed(2)}`}
                       </div>
                     </div>

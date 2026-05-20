@@ -1,4 +1,4 @@
-// AUD sheet-metal fabrication cost engine
+// AUD sheet-metal fabrication cost engine — dynamic process catalog
 
 export interface PartAnalysis {
   bbox_mm: [number, number, number];
@@ -26,24 +26,46 @@ export interface SheetConfig {
   h: number;
 }
 
-export interface ProcessConfig {
+export type ProcessPhase = 'component' | 'pre-assembly' | 'post-assembly';
+export type AutoFormula = 'none' | 'perimeter' | 'bend_count' | 'weld_length';
+
+export interface ProcessDef {
+  key: string;              // unique identifier
+  label: string;            // display name
+  phase: ProcessPhase;
   enabled: boolean;
+  rate: number;             // AUD/hr; 0 = pure flat-cost
+  pcsPerHour: number;       // 0 = auto via autoFrom
   setupMin: number;
-  pcsPerHour: number;   // 0 = auto-calculate from geometry
+  flatCostPerUnit: number;  // added on top OR sole cost when rate=0
+  autoFrom: AutoFormula;
+  mlbProcLabel: string;     // proc tag in MLB row
+  custom?: boolean;         // user-added (for delete control)
 }
 
-export interface FinishingConfig {
-  enabled: boolean;
-  costPerUnit: number;  // flat $ per unit
+export interface ManualPurchasePart {
+  id: string;
+  partNumber: string;
+  description: string;
+  qty: number;
+  unitCost: number;
 }
 
-export interface GlobalRates {
-  laser: number;             // AUD/hr
-  bending: number;
-  welding: number;
-  packing: number;
-  secPerBend: number;
-  weldSpeedMmPerMin: number;
+export interface AutoParams {
+  secPerBend: number;        // bend cycle time
+  weldSpeedMmPerMin: number; // weld speed
+}
+
+export interface ComponentOverride {
+  materialId?: string;
+  thicknessMm?: number;
+  sheetCost?: number;
+  sheetIndex?: number;
+  weldLengthMm?: number;
+  // undefined = inherit; defined array = override which component-phase processes apply
+  enabledProcessKeys?: string[];
+  // per-process tuning (pcs/h, setup, rate, flat)
+  perProcess?: Record<string, Partial<Pick<ProcessDef, 'pcsPerHour' | 'setupMin' | 'rate' | 'flatCostPerUnit'>>>;
 }
 
 export interface CostConfig {
@@ -53,40 +75,12 @@ export interface CostConfig {
   sheetIndex: number;
   thicknessOverrideMm: number | null;
   weldLengthMm: number;
-
   materials: MaterialConfig[];
   sheets: SheetConfig[];
-  rates: GlobalRates;
-
-  processes: {
-    laser: ProcessConfig;
-    bending: ProcessConfig;
-    welding: ProcessConfig;
-    finishing: FinishingConfig;
-    packing: ProcessConfig;
-  };
-
-  // keyed by part_number — per-component overrides in assembly mode
-  perComponent: Record<string, {
-    materialId?: string;
-    thicknessMm?: number;
-    sheetCost?: number;
-    sheetIndex?: number;
-    weldLengthMm?: number;
-    processes?: {
-      laser?: Partial<ProcessConfig>;
-      bending?: Partial<ProcessConfig>;
-      welding?: Partial<ProcessConfig>;
-      finishing?: Partial<FinishingConfig>;
-      packing?: Partial<ProcessConfig>;
-    };
-  }>;
-
-  assemblyOps: {
-    welding: boolean;
-    finishing: boolean;
-    finishCostPerUnit: number;
-  };
+  autoParams: AutoParams;
+  processes: ProcessDef[];                       // ordered catalog (array order = BOM order outer→inner per phase)
+  manualPurchaseParts: ManualPurchasePart[];     // user-added purchase parts at assembly level
+  perComponent: Record<string, ComponentOverride>;
 }
 
 export const DEFAULT_COST_CONFIG: CostConfig = {
@@ -106,42 +100,58 @@ export const DEFAULT_COST_CONFIG: CostConfig = {
     { label: '3000 × 1500 mm', w: 3000, h: 1500 },
     { label: '2500 × 1250 mm', w: 2500, h: 1250 },
   ],
-  rates: {
-    laser: 150,
-    bending: 110,
-    welding: 95,
-    packing: 65,
-    secPerBend: 15,
-    weldSpeedMmPerMin: 250,
-  },
-  processes: {
-    laser:    { enabled: true,  setupMin: 15, pcsPerHour: 0 },
-    bending:  { enabled: true,  setupMin: 15, pcsPerHour: 0 },
-    welding:  { enabled: false, setupMin: 15, pcsPerHour: 0 },
-    finishing:{ enabled: false, costPerUnit: 0 },
-    packing:  { enabled: true,  setupMin: 15, pcsPerHour: 120 },
-  },
+  autoParams: { secPerBend: 15, weldSpeedMmPerMin: 250 },
+  processes: [
+    { key: 'laser',    label: 'Laser / Turret',  phase: 'component',     enabled: true,  rate: 150, pcsPerHour: 0,   setupMin: 15, flatCostPerUnit: 0, autoFrom: 'perimeter',   mlbProcLabel: 'Laser' },
+    { key: 'bending',  label: 'CNC Bend',         phase: 'component',     enabled: true,  rate: 110, pcsPerHour: 0,   setupMin: 15, flatCostPerUnit: 0, autoFrom: 'bend_count',  mlbProcLabel: 'Bend'  },
+    { key: 'welding',  label: 'Assembly Weld',    phase: 'pre-assembly',  enabled: false, rate: 95,  pcsPerHour: 0,   setupMin: 15, flatCostPerUnit: 0, autoFrom: 'weld_length', mlbProcLabel: 'Weld'  },
+    { key: 'ecoat',    label: 'E-Coat / Powder',  phase: 'post-assembly', enabled: false, rate: 0,   pcsPerHour: 0,   setupMin: 0,  flatCostPerUnit: 5, autoFrom: 'none',        mlbProcLabel: 'Gal'   },
+    { key: 'packing',  label: 'Pack & Inspect',   phase: 'post-assembly', enabled: true,  rate: 65,  pcsPerHour: 120, setupMin: 15, flatCostPerUnit: 0, autoFrom: 'none',        mlbProcLabel: 'Pack'  },
+  ],
+  manualPurchaseParts: [],
   perComponent: {},
-  assemblyOps: { welding: false, finishing: false, finishCostPerUnit: 0 },
 };
+
+export interface ProcessCost {
+  key: string;
+  label: string;
+  unitCost: number;
+  pcsPerHour: number;
+}
 
 export interface CostBreakdown {
   materialUnit: number;
-  cuttingUnit: number;
-  bendingUnit: number;
-  weldingUnit: number;
-  finishingUnit: number;
-  packingUnit: number;
-  totalUnit: number;
+  processUnits: ProcessCost[];   // component-phase process costs (excludes pre/post-asm)
+  totalUnit: number;             // material + component-phase processes
   totalAll: number;
   sheetsNeeded: number;
   partsPerSheet: number;
   blankMassKg: number;
-  laserPcsPerHour: number;
-  bendingPcsPerHour: number;
-  weldingPcsPerHour: number;
-  finishingPcsPerHour: number;
-  packingPcsPerHour: number;
+}
+
+// Returns the effective process list for a component (applies override toggles + per-process tuning)
+export function effectiveProcessesForComponent(
+  config: CostConfig,
+  partId?: string,
+): ProcessDef[] {
+  const ov = partId ? config.perComponent[partId] : undefined;
+  const enabledSet = ov?.enabledProcessKeys;
+  return config.processes.map(p => {
+    const tuned = ov?.perProcess?.[p.key];
+    const allowedByOverride = enabledSet ? enabledSet.includes(p.key) : p.enabled;
+    return {
+      ...p,
+      enabled: allowedByOverride,
+      pcsPerHour: tuned?.pcsPerHour ?? p.pcsPerHour,
+      setupMin: tuned?.setupMin ?? p.setupMin,
+      rate: tuned?.rate ?? p.rate,
+      flatCostPerUnit: tuned?.flatCostPerUnit ?? p.flatCostPerUnit,
+    };
+  });
+}
+
+export function getProcessesByPhase(processes: ProcessDef[], phase: ProcessPhase): ProcessDef[] {
+  return processes.filter(p => p.phase === phase);
 }
 
 export function resolveComponentConfig(config: CostConfig, partId?: string): CostConfig {
@@ -155,18 +165,48 @@ export function resolveComponentConfig(config: CostConfig, partId?: string): Cos
     sheetIndex: ov.sheetIndex ?? config.sheetIndex,
     thicknessOverrideMm: ov.thicknessMm ?? config.thicknessOverrideMm,
     weldLengthMm: ov.weldLengthMm ?? config.weldLengthMm,
-    processes: ov.processes ? {
-      laser:    { ...config.processes.laser,    ...(ov.processes.laser    ?? {}) },
-      bending:  { ...config.processes.bending,  ...(ov.processes.bending  ?? {}) },
-      welding:  { ...config.processes.welding,  ...(ov.processes.welding  ?? {}) },
-      finishing:{ ...config.processes.finishing,...(ov.processes.finishing ?? {}) },
-      packing:  { ...config.processes.packing,  ...(ov.processes.packing  ?? {}) },
-    } : config.processes,
+    processes: effectiveProcessesForComponent(config, partId),
   };
 }
 
+function autoPcsPerHour(
+  proc: ProcessDef,
+  analysis: PartAnalysis,
+  material: MaterialConfig,
+  autoParams: AutoParams,
+  weldLengthMm: number,
+): number {
+  switch (proc.autoFrom) {
+    case 'perimeter': {
+      const min = analysis.cut_perimeter_mm / material.laserSpeedMmPerMin;
+      return min > 0 ? 60 / min : 0;
+    }
+    case 'bend_count': {
+      const min = (analysis.bend_count * autoParams.secPerBend) / 60;
+      return min > 0 ? 60 / min : 0;
+    }
+    case 'weld_length': {
+      const min = weldLengthMm / autoParams.weldSpeedMmPerMin;
+      return min > 0 ? 60 / min : 0;
+    }
+    default:
+      return 0;
+  }
+}
+
+// Computes per-process unit cost given resolved pcs/h, rate, setup, flat
+function computeProcUnit(proc: ProcessDef, pph: number, moq: number): number {
+  if (!proc.enabled) return 0;
+  const effectiveMoq = Math.max(moq, 1);
+  const flat = Math.max(0, proc.flatCostPerUnit);
+  if (proc.rate <= 0) return flat;
+  if (pph <= 0) return flat;
+  return proc.rate / pph + (proc.setupMin / 60) * proc.rate / effectiveMoq + flat;
+}
+
+// Calculate cost for a single component (component-phase processes only)
 export function calculateCost(analysis: PartAnalysis, config: CostConfig): CostBreakdown {
-  const { moq, sheetCost, sheetIndex, thicknessOverrideMm, weldLengthMm, rates, processes } = config;
+  const { moq, sheetCost, sheetIndex, thicknessOverrideMm, weldLengthMm, autoParams } = config;
   const effectiveQty = Math.max(moq, 1);
   const mat = config.materials.find(m => m.id === config.materialId) ?? config.materials[0];
   const sheet = config.sheets[sheetIndex] ?? config.sheets[0];
@@ -183,37 +223,42 @@ export function calculateCost(analysis: PartAnalysis, config: CostConfig): CostB
   const blankMassKg = ((blankW * blankH * thickness) / 1e9) * mat.density;
   const materialUnit = sheetCost / partsPerSheet;
 
-  const laserRunMin = analysis.cut_perimeter_mm / mat.laserSpeedMmPerMin;
-  const laserAutoPph = laserRunMin > 0 ? 60 / laserRunMin : 0;
-  const laserPcsPerHour = processes.laser.pcsPerHour > 0 ? processes.laser.pcsPerHour : laserAutoPph;
+  const componentProcs = getProcessesByPhase(config.processes, 'component');
+  const processUnits: ProcessCost[] = componentProcs.map(proc => {
+    const pph = proc.pcsPerHour > 0
+      ? proc.pcsPerHour
+      : autoPcsPerHour(proc, analysis, mat, autoParams, weldLengthMm);
+    const unitCost = computeProcUnit(proc, pph, moq);
+    return { key: proc.key, label: proc.label, unitCost, pcsPerHour: pph };
+  });
 
-  const bendRunMin = (analysis.bend_count * rates.secPerBend) / 60;
-  const bendAutoPph = bendRunMin > 0 ? 60 / bendRunMin : 0;
-  const bendingPcsPerHour = processes.bending.pcsPerHour > 0 ? processes.bending.pcsPerHour : bendAutoPph;
-
-  const weldRunMin = weldLengthMm / rates.weldSpeedMmPerMin;
-  const weldAutoPph = weldRunMin > 0 ? 60 / weldRunMin : 0;
-  const weldingPcsPerHour = processes.welding.pcsPerHour > 0 ? processes.welding.pcsPerHour : weldAutoPph;
-
-  const procUnit = (active: boolean, rate: number, pph: number, setupMin: number) => {
-    if (!active || pph <= 0) return 0;
-    return rate / pph + (setupMin / 60) * rate / effectiveQty;
-  };
-
-  const cuttingUnit  = procUnit(processes.laser.enabled, rates.laser, laserPcsPerHour, processes.laser.setupMin);
-  const bendingUnit  = procUnit(processes.bending.enabled && analysis.bend_count > 0, rates.bending, bendingPcsPerHour, processes.bending.setupMin);
-  const weldingUnit  = procUnit(processes.welding.enabled, rates.welding, weldingPcsPerHour, processes.welding.setupMin);
-  const finishingUnit = processes.finishing.enabled ? Math.max(0, processes.finishing.costPerUnit) : 0;
-  const packingUnit  = procUnit(processes.packing.enabled, rates.packing, processes.packing.pcsPerHour, processes.packing.setupMin);
-
-  const totalUnit = materialUnit + cuttingUnit + bendingUnit + weldingUnit + finishingUnit + packingUnit;
+  const procTotal = processUnits.reduce((s, p) => s + p.unitCost, 0);
+  const totalUnit = materialUnit + procTotal;
 
   return {
-    materialUnit, cuttingUnit, bendingUnit, weldingUnit, finishingUnit, packingUnit,
-    totalUnit, totalAll: totalUnit * effectiveQty,
-    sheetsNeeded, partsPerSheet, blankMassKg,
-    laserPcsPerHour, bendingPcsPerHour, weldingPcsPerHour,
-    finishingPcsPerHour: 0,
-    packingPcsPerHour: processes.packing.pcsPerHour,
+    materialUnit,
+    processUnits,
+    totalUnit,
+    totalAll: totalUnit * effectiveQty,
+    sheetsNeeded,
+    partsPerSheet,
+    blankMassKg,
   };
+}
+
+// Calculate per-unit cost for pre/post-assembly process (uses weld_length auto on assembly-level)
+export function calculateAssemblyProcessCost(
+  proc: ProcessDef,
+  config: CostConfig,
+): number {
+  const mat = config.materials.find(m => m.id === config.materialId) ?? config.materials[0];
+  // Assembly-level processes don't have a part analysis — only auto formulas using config-level data work
+  const fakeAnalysis: PartAnalysis = {
+    bbox_mm: [0, 0, 0], thickness_mm: 0, cut_perimeter_mm: 0, hole_count: 0, bend_count: 0,
+    flat_area_mm2: 0, flat_pattern_area_mm2: 0, flat_blank_w_mm: 0, flat_blank_h_mm: 0, holes_mm: [],
+  };
+  const pph = proc.pcsPerHour > 0
+    ? proc.pcsPerHour
+    : autoPcsPerHour(proc, fakeAnalysis, mat, config.autoParams, config.weldLengthMm);
+  return computeProcUnit(proc, pph, config.moq);
 }

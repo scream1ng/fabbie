@@ -18,13 +18,6 @@ export type BomFlowNode = {
   kind: "fg" | "process" | "material";
 };
 
-type ProcessFlags = {
-  laser: boolean;
-  bending: boolean;
-  welding: boolean;
-  finishing: boolean;
-};
-
 type BomInput = {
   partNumber: string;
   description: string;
@@ -32,6 +25,15 @@ type BomInput = {
   materialDescription: string;
   stages: BomStage[];
 };
+
+// Minimal shape needed to derive stages (mirrors ProcessDef without import cycle)
+interface ProcessStageInput {
+  key: string;
+  label: string;
+  phase: string;
+  enabled: boolean;
+  mlbProcLabel: string;
+}
 
 function normalizeItem(value: string, fallback: string) {
   const cleaned = value.trim().toUpperCase();
@@ -48,30 +50,15 @@ function normalizeLabel(value: string, fallback: string) {
   return cleaned || fallback;
 }
 
-export function buildProcessStages(
-  processes: ProcessFlags,
-  finishCode: string,
-  finishLabel: string,
-): BomStage[] {
-  const stages: BomStage[] = [];
-
-  if (processes.laser) {
-    stages.push({ code: "L", label: "LASER" });
-  }
-  if (processes.bending) {
-    stages.push({ code: "B", label: "BEND" });
-  }
-  if (processes.welding) {
-    stages.push({ code: "W", label: "WELD" });
-  }
-  if (processes.finishing) {
-    stages.push({
-      code: normalizeCode(finishCode, "F"),
-      label: normalizeLabel(finishLabel, "FINISH"),
-    });
-  }
-
-  return stages;
+// Build process stages for a component subtree from a list of enabled component-phase processes.
+// Array order = manufacturing order (first applied → last applied). Inner BOM levels = first applied.
+export function buildProcessStages(processes: ProcessStageInput[]): BomStage[] {
+  return processes
+    .filter(p => p.enabled && p.phase === 'component')
+    .map(p => ({
+      code: normalizeCode(p.mlbProcLabel || p.key, p.key.slice(0, 1).toUpperCase() || "P"),
+      label: normalizeLabel(p.mlbProcLabel || p.label, p.label.toUpperCase()),
+    }));
 }
 
 export function buildBomTree({
