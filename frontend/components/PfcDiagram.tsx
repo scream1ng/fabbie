@@ -25,22 +25,21 @@ export default function PfcDiagram({ rows }: PfcDiagramProps) {
       if (cancelled) return;
       mermaid.initialize({
         startOnLoad: false,
-        theme: 'dark',
+        theme: 'base',
         themeVariables: {
-          primaryColor: '#3f3f46',
-          primaryTextColor: '#e4e4e7',
-          primaryBorderColor: '#52525b',
-          lineColor: '#71717a',
-          secondaryColor: '#27272a',
-          tertiaryColor: '#18181b',
-          background: '#09090b',
-          mainBkg: '#27272a',
-          nodeBorder: '#52525b',
-          clusterBkg: '#18181b',
-          titleColor: '#a1a1aa',
-          edgeLabelBackground: '#18181b',
-          fontFamily: 'ui-monospace, monospace',
-          fontSize: '12px',
+          primaryColor: '#ffffff',
+          primaryTextColor: '#1c1814',
+          primaryBorderColor: '#cec8be',
+          lineColor: '#aca49a',
+          secondaryColor: '#f8f5f0',
+          tertiaryColor: '#f0ece5',
+          background: '#f0ece5',
+          mainBkg: '#ffffff',
+          nodeBorder: '#cec8be',
+          clusterBkg: '#f8f5f0',
+          titleColor: '#7a7060',
+          edgeLabelBackground: '#f0ece5',
+          fontFamily: "'IBM Plex Mono', monospace",
         },
       });
 
@@ -53,8 +52,26 @@ export default function PfcDiagram({ rows }: PfcDiagramProps) {
             // make SVG responsive
             const svgEl = containerRef.current.querySelector('svg');
             if (svgEl) {
+              svgEl.removeAttribute('width');
               svgEl.removeAttribute('height');
-              svgEl.style.maxWidth = '100%';
+              svgEl.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+              svgEl.style.width = '100%';
+              svgEl.style.height = '100%';
+              // force small font — themeVariables fontSize doesn't reach foreignObject labels
+              const styleEl = document.createElementNS('http://www.w3.org/2000/svg', 'style');
+              styleEl.textContent = `
+                .nodeLabel, .nodeLabel p, .nodeLabel div,
+                .label, .label p, .label div,
+                foreignObject div, foreignObject p, foreignObject span {
+                  font-size: 11px !important;
+                  font-family: 'IBM Plex Mono', monospace !important;
+                  line-height: 1.4 !important;
+                  text-align: center !important;
+                  display: block !important;
+                  width: 100% !important;
+                }
+              `;
+              svgEl.insertBefore(styleEl, svgEl.firstChild);
             }
           }
         })
@@ -75,7 +92,7 @@ export default function PfcDiagram({ rows }: PfcDiagramProps) {
   return (
     <div
       ref={containerRef}
-      className="w-full overflow-x-auto min-h-[80px] flex items-start justify-center"
+      className="flex-1 min-h-0 w-full overflow-hidden flex items-center justify-center"
     >
       <div className="text-xs text-zinc-600 animate-pulse py-8">Rendering diagram…</div>
     </div>

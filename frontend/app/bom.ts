@@ -178,7 +178,9 @@ export function buildMermaidFromMlb(rows: _MlbRow[]): string {
   const nid = (i: number) => `N${i}`;
 
   const decl = (row: _MlbRow, i: number): string => {
-    const label = esc(`${row.lvl}: ${row.d || row.p}`);
+    const top = esc(row.p || '');
+    const bot = esc(row.d || '');
+    const label = top && bot ? `${top}<br/>${bot}` : top || bot;
     const rect = row.proc === "RAW" || row.proc === "FG" || row.proc === "";
     return rect ? `${nid(i)}["${label}"]` : `${nid(i)}("${label}")`;
   };
