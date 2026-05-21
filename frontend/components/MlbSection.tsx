@@ -6,7 +6,6 @@ export interface BomRow {
   p: string; d: string; proc: string; qty: string; lvl: number;
   unit_cost?: string; qty_type?: 'use' | 'amortise';
   setup_min?: number; pcs_per_hour?: number; rate_per_hour?: number;
-  margin?: number;
 }
 
 interface MlbSectionProps {
@@ -16,7 +15,7 @@ interface MlbSectionProps {
   onMoqChange?: (n: number) => void;
 }
 
-const COLS = '72px 150px 60px 1fr 48px 68px 62px 52px 64px';
+const COLS = '72px 150px 60px 1fr 48px 68px 62px 64px';
 
 // Auto-fill when user sets proc to a known value.
 // Explicit undefined clears conflicting fields when switching type.
@@ -306,11 +305,6 @@ function BomRowEl({ row, idx, rows, moq, onChange, onChangeLevel, onDelete, onAd
         />
       ) : <Dash />}
 
-      {/* Margin % */}
-      {t === 'process' || t === 'material' ? (
-        <NumCell value={row.margin} onChange={v => onChange({ ...row, margin: v })} />
-      ) : <Dash />}
-
       {/* Cost */}
       <div className="flex items-center justify-end px-1.5 h-full">
         {t === 'process' || t === 'material' ? (
@@ -381,6 +375,11 @@ export default function MlbSection({ rows: propRows, onRowsChange, moq: propMoq,
     insertAt(idx + 1, { p: '', d: '', proc: '', qty: '1', lvl: rows[idx].lvl });
   };
 
+  const [margin, setMarginState] = useState(() => {
+    try { const s = localStorage.getItem('fabbie_margin_pct'); return s ? Number(s) : 0; } catch { return 0; }
+  });
+  const setMargin = (n: number) => { setMarginState(n); try { localStorage.setItem('fabbie_margin_pct', String(n)); } catch {} };
+
   const total = calcTotal(rows, moq);
 
   return (
@@ -419,7 +418,6 @@ export default function MlbSection({ rows: propRows, onRowsChange, moq: propMoq,
           <span className="text-[9px] font-mono uppercase tracking-wider text-[#aca49a] px-1.5 text-right">Setup</span>
           <span className="text-[9px] font-mono uppercase tracking-wider text-[#aca49a] px-1.5 text-right">Pcs/h</span>
           <span className="text-[9px] font-mono uppercase tracking-wider text-[#aca49a] px-1.5 text-right">Rate</span>
-          <span className="text-[9px] font-mono uppercase tracking-wider text-[#aca49a] px-1.5 text-right">MGN%</span>
           <span className="text-[9px] font-mono uppercase tracking-wider text-[#aca49a] px-1.5 text-right">Cost</span>
         </div>
 
@@ -436,6 +434,22 @@ export default function MlbSection({ rows: propRows, onRowsChange, moq: propMoq,
 
         </div>
 
+        {/* Margin row */}
+        <div className="flex items-center px-3.5 border-t border-[#cec8be] bg-[#f8f5f0]" style={{ height: 30 }}>
+          <span className="text-[11px] font-mono text-[#7a7060] flex-1">Margin</span>
+          <div className="flex items-center gap-1">
+            <input
+              type="number" min={0} max={100} value={margin}
+              onChange={e => setMargin(Math.max(0, Number(e.target.value)))}
+              className="w-12 text-[11px] font-mono text-right bg-transparent border-b border-[#cec8be] outline-none focus:border-[#1c1814]"
+            />
+            <span className="text-[11px] font-mono text-[#7a7060]">%</span>
+          </div>
+          <span className="text-[11px] font-mono text-[#7a7060] w-20 text-right">
+            {margin > 0 ? fmt(total * margin / 100) : '—'}
+          </span>
+        </div>
+
         {/* Total bar */}
         <div className="grid px-0.5 border-t-2 border-[#cec8be] bg-white"
           style={{ gridTemplateColumns: COLS, height: 36 }}>
@@ -443,9 +457,9 @@ export default function MlbSection({ rows: propRows, onRowsChange, moq: propMoq,
           <div className="flex items-center px-1.5">
             <span className="text-[11px] font-mono font-medium text-[#1c1814]">Total / unit</span>
           </div>
-          <span /><span /><span /><span />
+          <span /><span /><span />
           <div className="flex items-center justify-end px-1.5">
-            <span className="text-[13px] font-mono font-semibold text-[#1c1814]">{fmt(total)}</span>
+            <span className="text-[13px] font-mono font-semibold text-[#1c1814]">{fmt(total * (1 + margin / 100))}</span>
           </div>
         </div>
 
