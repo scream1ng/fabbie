@@ -29,7 +29,7 @@ export default function PfcDiagram({ rows }: PfcDiagramProps) {
         startOnLoad: false,
         theme: 'base',
         flowchart: {
-          curve: 'stepAfter',
+          curve: 'basis',
           htmlLabels: true,
           nodeSpacing: 30,
           rankSpacing: 42,
@@ -77,6 +77,8 @@ export default function PfcDiagram({ rows }: PfcDiagramProps) {
                   line-height: 1.2 !important;
                   text-align: center !important;
                   display: block !important;
+                  margin: 0 !important;
+                  padding: 0 !important;
                   width: 100% !important;
                 }
                 .flowchart-link {

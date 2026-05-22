@@ -15,8 +15,8 @@ interface MlbSectionProps {
   onMoqChange?: (n: number) => void;
 }
 
-const COLS = '72px 190px 60px minmax(220px,1fr) 48px 68px 62px 64px';
-const TABLE_MIN_WIDTH = '720px';
+const COLS = '72px 190px 60px minmax(220px,1fr) 48px 68px 22px 62px 64px';
+const TABLE_MIN_WIDTH = '742px';
 
 // Auto-fill when user sets proc to a known value.
 // Explicit undefined clears conflicting fields when switching type.
@@ -218,20 +218,27 @@ function Dash() {
   );
 }
 
+function BlankCell() {
+  return <div className="h-full w-full" />;
+}
+
 function MaterialQtyCell({ row, onChange }: { row: BomRow; onChange: (row: BomRow) => void }) {
+  return (
+    <NumCell
+      value={Number(row.qty) || 1}
+      onChange={v => onChange({ ...row, qty: String(Math.max(1, v ?? 1)) })}
+    />
+  );
+}
+
+function QtyModeCell({ row, onChange }: { row: BomRow; onChange: (row: BomRow) => void }) {
   const mode = row.qty_type ?? 'use';
   return (
-    <div className="flex items-center justify-end gap-1.5 h-full overflow-visible pr-1">
-      <div className="w-full">
-        <NumCell
-          value={Number(row.qty) || 1}
-          onChange={v => onChange({ ...row, qty: String(Math.max(1, v ?? 1)) })}
-        />
-      </div>
+    <div className="flex h-full items-center justify-center">
       <button
         type="button"
         onClick={() => onChange({ ...row, qty_type: mode === 'use' ? 'amortise' : 'use' })}
-        className="flex h-full min-w-[10px] items-center justify-center text-[11px] font-mono font-semibold cursor-pointer select-none leading-none"
+        className="flex h-5 w-3 items-center justify-center text-[11px] font-mono font-semibold cursor-pointer select-none leading-none"
         style={{ color: mode === 'use' ? '#1c1814' : '#a86010' }}
         aria-label={mode === 'use' ? 'Switch material quantity mode to amortise' : 'Switch material quantity mode to use'}
         title={mode === 'use' ? 'qty × unit cost — click to toggle' : 'unit cost ÷ qty — click to toggle'}
@@ -314,12 +321,17 @@ function BomRowEl({ row, idx, rows, moq, onChange, onChangeLevel, onDelete, onAd
         ? <NumCell value={row.setup_min} onChange={v => onChange({ ...row, setup_min: v })} />
         : <Dash />}
 
-      {/* Pcs/h or Qty+toggle */}
+      {/* Pcs/h or Qty */}
       {t === 'process' ? (
         <NumCell value={row.pcs_per_hour} onChange={v => onChange({ ...row, pcs_per_hour: v })} />
       ) : t === 'material' ? (
         <MaterialQtyCell row={row} onChange={onChange} />
       ) : <Dash />}
+
+      {/* Qty mode toggle hidden column */}
+      {t === 'material' ? (
+        <QtyModeCell row={row} onChange={onChange} />
+      ) : <BlankCell />}
 
       {/* Rate / $ Unit */}
       {t === 'process' ? (
@@ -343,7 +355,12 @@ function BomRowEl({ row, idx, rows, moq, onChange, onChangeLevel, onDelete, onAd
   );
 }
 
-export default function MlbSection({ rows: propRows, onRowsChange, moq: propMoq, onMoqChange }: MlbSectionProps) {
+export default function MlbSection({
+  rows: propRows,
+  onRowsChange,
+  moq: propMoq,
+  onMoqChange,
+}: MlbSectionProps) {
   const [ownRows, setOwnRows] = useState<BomRow[]>(DEFAULT_ROWS);
   const [ownMoq, setOwnMoq] = useState(400);
   const rows = propRows ?? ownRows;
@@ -445,6 +462,7 @@ export default function MlbSection({ rows: propRows, onRowsChange, moq: propMoq,
               <span className="text-[9px] font-mono uppercase tracking-wider text-[#aca49a] px-1.5">Description</span>
               <span className="text-[9px] font-mono uppercase tracking-wider text-[#aca49a] px-1.5 text-right">Setup</span>
               <span className="text-[9px] font-mono uppercase tracking-wider text-[#aca49a] px-1.5 text-right">Pcs/h</span>
+              <span />
               <span className="text-[9px] font-mono uppercase tracking-wider text-[#aca49a] px-1.5 text-right">Rate</span>
               <span className="text-[9px] font-mono uppercase tracking-wider text-[#aca49a] px-1.5 text-right">Cost</span>
             </div>
@@ -462,9 +480,16 @@ export default function MlbSection({ rows: propRows, onRowsChange, moq: propMoq,
             </div>
 
             {/* Margin row */}
-            <div className="flex items-center px-3.5 border-t border-[#cec8be] bg-[#f8f5f0]" style={{ height: 30 }}>
-              <span className="text-[11px] font-mono text-[#7a7060] flex-1">Margin</span>
-              <div className="flex items-center gap-1">
+            <div
+              className="grid px-0.5 border-t border-[#cec8be] bg-[#f8f5f0]"
+              style={{ gridTemplateColumns: COLS, height: 30 }}
+            >
+              <span /><span /><span />
+              <div className="flex items-center px-1.5">
+                <span className="text-[11px] font-mono text-[#7a7060]">Margin</span>
+              </div>
+              <span /><span /><span />
+              <div className="flex items-center justify-end px-1.5">
                 <input
                   type="number" min={0} max={100} value={margin}
                   onChange={e => setMargin(Math.max(0, Number(e.target.value)))}
@@ -472,9 +497,11 @@ export default function MlbSection({ rows: propRows, onRowsChange, moq: propMoq,
                 />
                 <span className="text-[11px] font-mono text-[#7a7060]">%</span>
               </div>
-              <span className="text-[11px] font-mono text-[#7a7060] w-20 text-right">
-                {margin > 0 ? fmt(total * margin / 100) : '—'}
-              </span>
+              <div className="flex items-center justify-end px-1.5">
+                <span className="text-[11px] font-mono text-[#7a7060]">
+                  {margin > 0 ? fmt(total * margin / 100) : '—'}
+                </span>
+              </div>
             </div>
 
             {/* Total bar */}
@@ -484,7 +511,7 @@ export default function MlbSection({ rows: propRows, onRowsChange, moq: propMoq,
               <div className="flex items-center px-1.5">
                 <span className="text-[11px] font-mono font-medium text-[#1c1814]">Total / unit</span>
               </div>
-              <span /><span /><span />
+              <span /><span /><span /><span />
               <div className="flex items-center justify-end px-1.5">
                 <span className="text-[13px] font-mono font-semibold text-[#1c1814]">{fmt(total * (1 + margin / 100))}</span>
               </div>

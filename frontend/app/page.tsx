@@ -30,7 +30,6 @@ type Status = "idle" | "loading" | "viewing" | "exporting" | "error";
 
 type ApiComp = ApiCompWithGeom;
 
-
 const MAX_EXPORT_PX = 4096;
 const MAX_VIEWER_SEGMENTS = 60000;
 const EXPORT_SUPERSAMPLE = 4;
