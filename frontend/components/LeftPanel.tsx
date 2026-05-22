@@ -1,6 +1,6 @@
 'use client';
 
-import React from 'react';
+import React, { useId } from 'react';
 
 interface LeftPanelProps {
   mountRef: React.RefObject<HTMLDivElement>;
@@ -49,10 +49,14 @@ export default function LeftPanel({
   const showViewer = status === 'viewing' || status === 'exporting';
   const showDrop   = status === 'idle' || status === 'error';
   const exportPx   = Math.round((exportSizeMm / 25.4) * exportDpi);
+  const linePxId = useId();
+  const partNameId = useId();
+  const exportSizeId = useId();
+  const exportDpiId = useId();
 
   return (
     <div
-      className="w-[360px] flex-shrink-0 flex flex-col h-full bg-white border-r border-[#cec8be]"
+      className="w-full xl:w-[360px] xl:flex-shrink-0 flex flex-col bg-white border-b xl:border-b-0 xl:border-r border-[#cec8be]"
       style={{ fontFamily: "'IBM Plex Mono', monospace" }}
     >
       {/* ── 3D Viewport ── */}
@@ -62,7 +66,8 @@ export default function LeftPanel({
       >
         {/* Drop overlay — only shown when idle/error */}
         {showDrop && (
-          <div
+          <button
+            type="button"
             onDrop={onDrop}
             onDragOver={onDragOver}
             onDragLeave={onDragLeave}
@@ -71,13 +76,14 @@ export default function LeftPanel({
               'absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 cursor-pointer transition-colors',
               dragging ? 'bg-[#0d1a3a]/80' : '',
             ].join(' ')}
+            aria-label="Upload STEP file"
           >
             <svg className="w-10 h-10 text-[#46433c]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
                 d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5m-13.5-9L12 3m0 0 4.5 4.5M12 3v13.5" />
             </svg>
             <span className="text-[11px] text-[#46433c] select-none">Drop .step / .stp or click</span>
-          </div>
+          </button>
         )}
 
         {/* Loading spinner */}
@@ -128,8 +134,9 @@ export default function LeftPanel({
         {/* Line thickness — only when viewer active */}
         {showViewer && (
           <div className="flex items-center gap-2 mb-2.5">
-            <span className="text-[10px] text-[#7a7060] whitespace-nowrap">Line Thickness</span>
+            <label htmlFor={linePxId} className="text-[10px] text-[#7a7060] whitespace-nowrap">Line Thickness</label>
             <input
+              id={linePxId}
               type="range" min={1} max={10} value={linePx}
               onChange={(e) => onLinePxChange(Number(e.target.value))}
               className="flex-1 accent-[#1c1814]"
@@ -142,8 +149,9 @@ export default function LeftPanel({
 
         {/* Part name */}
         <div className="flex flex-col gap-1 mb-2">
-          <span className="text-[9px] text-[#7a7060] uppercase tracking-wider">Part Name</span>
+          <label htmlFor={partNameId} className="text-[9px] text-[#7a7060] uppercase tracking-wider">Part Name</label>
           <input
+            id={partNameId}
             type="text"
             value={partName}
             onChange={(e) => onPartNameChange(e.target.value)}
@@ -155,8 +163,9 @@ export default function LeftPanel({
         {/* Size + DPI */}
         <div className="flex gap-2 mb-2.5">
           <div className="flex flex-col gap-1 flex-1">
-            <span className="text-[9px] text-[#7a7060] uppercase tracking-wider">Size (mm)</span>
+            <label htmlFor={exportSizeId} className="text-[9px] text-[#7a7060] uppercase tracking-wider">Long Side (mm)</label>
             <input
+              id={exportSizeId}
               type="number" min={5} max={1000}
               value={exportSizeMm}
               onChange={(e) => onExportSizeMmChange(Math.max(5, Number(e.target.value)))}
@@ -164,8 +173,9 @@ export default function LeftPanel({
             />
           </div>
           <div className="flex flex-col gap-1 flex-1">
-            <span className="text-[9px] text-[#7a7060] uppercase tracking-wider">DPI</span>
+            <label htmlFor={exportDpiId} className="text-[9px] text-[#7a7060] uppercase tracking-wider">DPI</label>
             <input
+              id={exportDpiId}
               type="number" min={72} max={1200}
               value={exportDpi}
               onChange={(e) => onExportDpiChange(Math.max(72, Number(e.target.value)))}
@@ -193,7 +203,7 @@ export default function LeftPanel({
 
         {/* Pixel hint */}
         <div className="text-[9px] text-[#aca49a]">
-          {exportSizeMm} × {exportSizeMm} mm — {exportPx} × {exportPx} px JPG
+          Live viewport framing is preserved on export — longest side {exportSizeMm} mm / {exportPx} px
         </div>
 
         {/* Error message below controls */}

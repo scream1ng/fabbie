@@ -16,6 +16,7 @@ interface MlbSectionProps {
 }
 
 const COLS = '72px 150px 60px 1fr 48px 68px 62px 64px';
+const TABLE_MIN_WIDTH = '660px';
 
 // Auto-fill when user sets proc to a known value.
 // Explicit undefined clears conflicting fields when switching type.
@@ -157,11 +158,15 @@ function Cell({ value, onChange, centerAlign, placeholder = '—', dim, list }: 
     );
   }
   return (
-    <div className="flex items-center w-full h-full px-1.5 cursor-text group min-w-0" onClick={() => setEditing(true)}>
+    <button
+      type="button"
+      className="flex items-center w-full h-full px-1.5 cursor-text group min-w-0 text-left"
+      onClick={() => setEditing(true)}
+    >
       <span className={`truncate w-full text-[11px] font-mono group-hover:underline group-hover:decoration-dotted group-hover:underline-offset-2 ${align} ${(!value || dim) ? 'text-[#aca49a]' : 'text-[#1c1814]'}`}>
         {value || placeholder}
       </span>
-    </div>
+    </button>
   );
 }
 
@@ -185,15 +190,23 @@ function NumCell({ value, onChange }: { value: number | undefined; onChange: (v:
   }
   if (value === undefined) {
     return (
-      <div className="flex items-center justify-end px-1.5 h-full cursor-text" onClick={() => { setDraft(''); setEditing(true); }}>
+      <button
+        type="button"
+        className="flex items-center justify-end px-1.5 h-full cursor-text w-full"
+        onClick={() => { setDraft(''); setEditing(true); }}
+      >
         <span className="text-[11px] font-mono text-[#aca49a]">—</span>
-      </div>
+      </button>
     );
   }
   return (
-    <div className="flex items-center justify-end px-1.5 h-full cursor-text group" onClick={() => { setDraft(String(value)); setEditing(true); }}>
+    <button
+      type="button"
+      className="flex items-center justify-end px-1.5 h-full cursor-text group w-full"
+      onClick={() => { setDraft(String(value)); setEditing(true); }}
+    >
       <span className="text-[11px] font-mono text-[#1c1814] group-hover:underline group-hover:decoration-dotted group-hover:underline-offset-2">{value}</span>
-    </div>
+    </button>
   );
 }
 
@@ -236,14 +249,14 @@ function BomRowEl({ row, idx, rows, moq, onChange, onChangeLevel, onDelete, onAd
       style={{ gridTemplateColumns: COLS }}>
 
       {/* × ← → + */}
-      <div className="flex items-center justify-center gap-px opacity-0 group-hover/row:opacity-100 transition-opacity px-1">
-        <button onClick={onDelete} title="Delete"
+      <div className="flex items-center justify-center gap-px opacity-100 md:opacity-0 md:group-hover/row:opacity-100 md:group-focus-within/row:opacity-100 transition-opacity px-1">
+        <button type="button" onClick={onDelete} title="Delete" aria-label="Delete row"
           className="w-[15px] h-5 flex items-center justify-center rounded text-[11px] leading-none text-[#aca49a] hover:bg-red-100 hover:text-red-500">×</button>
-        <button disabled={!canOutdent} onClick={() => onChangeLevel(-1)} title="Outdent"
+        <button type="button" disabled={!canOutdent} onClick={() => onChangeLevel(-1)} title="Outdent" aria-label="Outdent row"
           className="w-[15px] h-5 flex items-center justify-center rounded text-[10px] text-[#aca49a] hover:bg-[#cec8be] hover:text-[#1c1814] disabled:opacity-20 disabled:pointer-events-none">←</button>
-        <button disabled={!canIndent} onClick={() => onChangeLevel(1)} title="Indent"
+        <button type="button" disabled={!canIndent} onClick={() => onChangeLevel(1)} title="Indent" aria-label="Indent row"
           className="w-[15px] h-5 flex items-center justify-center rounded text-[10px] text-[#aca49a] hover:bg-[#cec8be] hover:text-[#1c1814] disabled:opacity-20 disabled:pointer-events-none">→</button>
-        <button onClick={onAdd} title="Add row below (set Proc to activate)"
+        <button type="button" onClick={onAdd} title="Add row below (set Proc to activate)" aria-label="Add row below"
           className="w-[15px] h-5 flex items-center justify-center rounded text-[11px] leading-none text-[#aca49a] hover:bg-[#cec8be] hover:text-[#1c1814]">+</button>
       </div>
 
@@ -286,12 +299,14 @@ function BomRowEl({ row, idx, rows, moq, onChange, onChangeLevel, onDelete, onAd
             value={Number(row.qty) || 1}
             onChange={v => onChange({ ...row, qty: String(Math.max(1, v ?? 1)) })}
           />
-          <span
+          <button
+            type="button"
             onClick={() => onChange({ ...row, qty_type: (row.qty_type ?? 'use') === 'use' ? 'amortise' : 'use' })}
             className="text-[11px] font-mono font-semibold cursor-pointer select-none w-3 text-center flex-shrink-0"
             style={{ color: (row.qty_type ?? 'use') === 'use' ? '#1c1814' : '#a86010' }}
+            aria-label={(row.qty_type ?? 'use') === 'use' ? 'Switch material quantity mode to amortise' : 'Switch material quantity mode to use'}
             title={(row.qty_type ?? 'use') === 'use' ? 'qty × unit cost — click to toggle' : 'unit cost ÷ qty — click to toggle'}
-          >{(row.qty_type ?? 'use') === 'use' ? '×' : '÷'}</span>
+          >{(row.qty_type ?? 'use') === 'use' ? '×' : '÷'}</button>
         </div>
       ) : <Dash />}
 
@@ -408,58 +423,61 @@ export default function MlbSection({ rows: propRows, onRowsChange, moq: propMoq,
           </div>
         </div>
 
-        {/* Column header */}
-        <div className="grid px-0.5 h-6 items-center border-b border-[#cec8be] bg-[#f8f5f0]"
-          style={{ gridTemplateColumns: COLS }}>
-          <span />
-          <span className="text-[9px] font-mono uppercase tracking-wider text-[#aca49a] px-1.5">Part</span>
-          <span className="text-[9px] font-mono uppercase tracking-wider text-[#aca49a] px-1.5 text-center">Proc</span>
-          <span className="text-[9px] font-mono uppercase tracking-wider text-[#aca49a] px-1.5">Description</span>
-          <span className="text-[9px] font-mono uppercase tracking-wider text-[#aca49a] px-1.5 text-right">Setup</span>
-          <span className="text-[9px] font-mono uppercase tracking-wider text-[#aca49a] px-1.5 text-right">Pcs/h</span>
-          <span className="text-[9px] font-mono uppercase tracking-wider text-[#aca49a] px-1.5 text-right">Rate</span>
-          <span className="text-[9px] font-mono uppercase tracking-wider text-[#aca49a] px-1.5 text-right">Cost</span>
-        </div>
+        <div className="overflow-x-auto">
+          <div style={{ minWidth: TABLE_MIN_WIDTH }}>
+            {/* Column header */}
+            <div className="grid px-0.5 h-6 items-center border-b border-[#cec8be] bg-[#f8f5f0]"
+              style={{ gridTemplateColumns: COLS }}>
+              <span />
+              <span className="text-[9px] font-mono uppercase tracking-wider text-[#aca49a] px-1.5">Part</span>
+              <span className="text-[9px] font-mono uppercase tracking-wider text-[#aca49a] px-1.5 text-center">Proc</span>
+              <span className="text-[9px] font-mono uppercase tracking-wider text-[#aca49a] px-1.5">Description</span>
+              <span className="text-[9px] font-mono uppercase tracking-wider text-[#aca49a] px-1.5 text-right">Setup</span>
+              <span className="text-[9px] font-mono uppercase tracking-wider text-[#aca49a] px-1.5 text-right">Pcs/h</span>
+              <span className="text-[9px] font-mono uppercase tracking-wider text-[#aca49a] px-1.5 text-right">Rate</span>
+              <span className="text-[9px] font-mono uppercase tracking-wider text-[#aca49a] px-1.5 text-right">Cost</span>
+            </div>
 
-        {/* Rows */}
-        <div className="overflow-y-auto px-2 py-1" style={{ height: '420px' }}>
-          {rows.map((row, idx) => (
-            <BomRowEl key={idx} row={row} idx={idx} rows={rows} moq={moq}
-              onChange={r => updateRow(idx, r)}
-              onChangeLevel={delta => changeLevel(idx, delta)}
-              onDelete={() => deleteRow(idx)}
-              onAdd={() => addAfter(idx)}
-            />
-          ))}
+            {/* Rows */}
+            <div className="overflow-y-auto px-2 py-1" style={{ height: '420px' }}>
+              {rows.map((row, idx) => (
+                <BomRowEl key={idx} row={row} idx={idx} rows={rows} moq={moq}
+                  onChange={r => updateRow(idx, r)}
+                  onChangeLevel={delta => changeLevel(idx, delta)}
+                  onDelete={() => deleteRow(idx)}
+                  onAdd={() => addAfter(idx)}
+                />
+              ))}
+            </div>
 
-        </div>
+            {/* Margin row */}
+            <div className="flex items-center px-3.5 border-t border-[#cec8be] bg-[#f8f5f0]" style={{ height: 30 }}>
+              <span className="text-[11px] font-mono text-[#7a7060] flex-1">Margin</span>
+              <div className="flex items-center gap-1">
+                <input
+                  type="number" min={0} max={100} value={margin}
+                  onChange={e => setMargin(Math.max(0, Number(e.target.value)))}
+                  className="w-12 text-[11px] font-mono text-right bg-transparent border-b border-[#cec8be] outline-none focus:border-[#1c1814]"
+                />
+                <span className="text-[11px] font-mono text-[#7a7060]">%</span>
+              </div>
+              <span className="text-[11px] font-mono text-[#7a7060] w-20 text-right">
+                {margin > 0 ? fmt(total * margin / 100) : '—'}
+              </span>
+            </div>
 
-        {/* Margin row */}
-        <div className="flex items-center px-3.5 border-t border-[#cec8be] bg-[#f8f5f0]" style={{ height: 30 }}>
-          <span className="text-[11px] font-mono text-[#7a7060] flex-1">Margin</span>
-          <div className="flex items-center gap-1">
-            <input
-              type="number" min={0} max={100} value={margin}
-              onChange={e => setMargin(Math.max(0, Number(e.target.value)))}
-              className="w-12 text-[11px] font-mono text-right bg-transparent border-b border-[#cec8be] outline-none focus:border-[#1c1814]"
-            />
-            <span className="text-[11px] font-mono text-[#7a7060]">%</span>
-          </div>
-          <span className="text-[11px] font-mono text-[#7a7060] w-20 text-right">
-            {margin > 0 ? fmt(total * margin / 100) : '—'}
-          </span>
-        </div>
-
-        {/* Total bar */}
-        <div className="grid px-0.5 border-t-2 border-[#cec8be] bg-white"
-          style={{ gridTemplateColumns: COLS, height: 36 }}>
-          <span /><span /><span />
-          <div className="flex items-center px-1.5">
-            <span className="text-[11px] font-mono font-medium text-[#1c1814]">Total / unit</span>
-          </div>
-          <span /><span /><span />
-          <div className="flex items-center justify-end px-1.5">
-            <span className="text-[13px] font-mono font-semibold text-[#1c1814]">{fmt(total * (1 + margin / 100))}</span>
+            {/* Total bar */}
+            <div className="grid px-0.5 border-t-2 border-[#cec8be] bg-white"
+              style={{ gridTemplateColumns: COLS, height: 36 }}>
+              <span /><span /><span />
+              <div className="flex items-center px-1.5">
+                <span className="text-[11px] font-mono font-medium text-[#1c1814]">Total / unit</span>
+              </div>
+              <span /><span /><span />
+              <div className="flex items-center justify-end px-1.5">
+                <span className="text-[13px] font-mono font-semibold text-[#1c1814]">{fmt(total * (1 + margin / 100))}</span>
+              </div>
+            </div>
           </div>
         </div>
 

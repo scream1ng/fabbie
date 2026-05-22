@@ -51,9 +51,13 @@ function InlineNum({ value, onChange }: { value: number; onChange: (v: number) =
     />
   );
   return (
-    <div className="flex items-center justify-end px-1.5 h-full cursor-text group" onClick={() => { setDraft(String(value)); setEditing(true); }}>
+    <button
+      type="button"
+      className="flex items-center justify-end px-1.5 h-full cursor-text group w-full"
+      onClick={() => { setDraft(String(value)); setEditing(true); }}
+    >
       <span className="text-[11px] font-mono text-[#1c1814] group-hover:underline group-hover:decoration-dotted">{value}</span>
-    </div>
+    </button>
   );
 }
 
@@ -70,9 +74,13 @@ function InlineText({ value, onChange }: { value: string; onChange: (v: string) 
     />
   );
   return (
-    <div className="flex items-center px-1.5 h-full cursor-text group min-w-0" onClick={() => { setDraft(value); setEditing(true); }}>
+    <button
+      type="button"
+      className="flex items-center px-1.5 h-full cursor-text group min-w-0 w-full text-left"
+      onClick={() => { setDraft(value); setEditing(true); }}
+    >
       <span className="truncate text-[11px] font-mono text-[#1c1814] group-hover:underline group-hover:decoration-dotted">{value || <span className="text-[#aca49a]">—</span>}</span>
-    </div>
+    </button>
   );
 }
 
@@ -123,8 +131,8 @@ export default function DataTab() {
           {procs.map((p, i) => (
             <div key={i} className="grid items-stretch h-[30px] border-b border-[#cec8be] last:border-b-0 group hover:bg-[#f8f5f0]"
               style={{ gridTemplateColumns: '20px 1fr 44px 72px 72px 64px 64px' }}>
-              <div className="flex items-center justify-center opacity-0 group-hover:opacity-100">
-                <button onClick={() => delProc(i)}
+              <div className="flex items-center justify-center opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100">
+                <button type="button" onClick={() => delProc(i)} aria-label="Delete process preset"
                   className="w-4 h-4 flex items-center justify-center rounded text-[11px] text-[#aca49a] hover:bg-red-100 hover:text-red-500">×</button>
               </div>
               <InlineText value={p.proc} onChange={v => updateProc(i, { proc: v })} />
@@ -173,16 +181,16 @@ export default function DataTab() {
           {mats.map(m => (
             <div key={m.id} className="grid items-stretch h-[30px] border-b border-[#cec8be] last:border-b-0 group hover:bg-[#f8f5f0]"
               style={{ gridTemplateColumns: '20px 100px 1fr 72px' }}>
-              <div className="flex items-center justify-center opacity-0 group-hover:opacity-100">
-                <button onClick={() => delMat(m.id)}
+              <div className="flex items-center justify-center opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100">
+                <button type="button" onClick={() => delMat(m.id)} aria-label="Delete material"
                   className="w-4 h-4 flex items-center justify-center rounded text-[11px] text-[#aca49a] hover:bg-red-100 hover:text-red-500">×</button>
               </div>
               <div className="flex items-stretch min-w-0">
                 <div className="flex-1 min-w-0">
                   <InlineText value={m.p} onChange={v => updateMat(m.id, { p: v })} />
                 </div>
-                <button onClick={() => copyPart(m.p)} title="Copy part#"
-                  className="flex-shrink-0 px-1 text-[#cec8be] hover:text-[#1c1814] text-[10px] opacity-0 group-hover:opacity-100">⎘</button>
+                <button type="button" onClick={() => copyPart(m.p)} title="Copy part#" aria-label="Copy part number"
+                  className="flex-shrink-0 px-1 text-[#cec8be] hover:text-[#1c1814] text-[10px] opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">⎘</button>
               </div>
               <InlineText value={m.d} onChange={v => updateMat(m.id, { d: v })} />
               <InlineNum value={m.cost} onChange={v => updateMat(m.id, { cost: v })} />

@@ -30,14 +30,6 @@ type Status = "idle" | "loading" | "viewing" | "exporting" | "error";
 
 type ApiComp = ApiCompWithGeom;
 
-function compLabel(comp: ApiComp): string {
-  const desc = comp.description.trim();
-  if (desc) return desc.slice(0, 28);
-  const m = comp.part_number.match(/_\d+-([\w\s\-]+?)(?:\s+_|$)/);
-  if (m) return m[1].trim().slice(0, 28);
-  return comp.part_number.slice(0, 28);
-}
-
 
 const MAX_EXPORT_PX = 4096;
 const MAX_VIEWER_SEGMENTS = 60000;
@@ -145,6 +137,7 @@ function Home() {
 
   useEffect(() => {
     if (isAssembly) return;
+    if (assemblyApiComps.length > 0) return;
     setMlbRows((prev) => {
       const procOf = (row: BomTreeRow): string => {
         if (row.kind === 'fg') return 'FG';
@@ -168,7 +161,7 @@ function Home() {
         };
       });
     });
-  }, [generatedBomRows, isAssembly]);
+  }, [assemblyApiComps.length, generatedBomRows, isAssembly]);
 
   useEffect(() => { localStorage.setItem('fabbie_mlb', JSON.stringify(mlbRows)); }, [mlbRows]);
   useEffect(() => { localStorage.setItem('fabbie_moq', String(moq)); }, [moq]);
@@ -197,14 +190,15 @@ function Home() {
         const data = await res.json();
         if (id !== loadIdRef.current) return;
 
-        if (data.is_assembly && Array.isArray(data.components) && data.components.length > 0) {
+        if (Array.isArray(data.components) && data.components.length > 0) {
           const comps: ApiComp[] = data.components;
-          setIsAssembly(true);
+          setIsAssembly(Boolean(data.is_assembly));
           setAssemblyApiComps(comps);
+          setMlbRows(initMlbRows(comps));
           const root = comps.find(c => c.level === 0);
           if (root) {
             setBomPartNumber(root.part_number);
-            setBomDescription(compLabel(root));
+            setBomDescription(root.description.trim() || root.part_number);
           }
         } else {
           setIsAssembly(false);
@@ -408,6 +402,7 @@ function Home() {
       setMaterialDescription(
         (costConfig.materials.find(m => m.id === costConfig.materialId)?.label ?? 'MILD STEEL').toUpperCase()
       );
+      setMlbRows([]);
       loadMesh(nextFile);
     },
     [costConfig.materialId, costConfig.materials, loadMesh],
@@ -430,7 +425,8 @@ function Home() {
     const scene = sceneRef.current;
     const camera = cameraRef.current;
     const controls = controlsRef.current;
-    if (!scene || !camera) return;
+    const mount = mountRef.current;
+    if (!scene || !camera || !mount) return;
 
     setStatus("exporting");
     setErrorMsg("");
@@ -438,17 +434,26 @@ function Home() {
     let exportRenderer: THREE.WebGLRenderer | null = null;
     let previousLineWidth: number | null = null;
     try {
-      const exportPx = Math.round((exportCm / 2.54) * exportDpi);
-      if (!Number.isFinite(exportPx) || exportPx < 1) {
+      const longestSidePx = Math.round((exportCm / 2.54) * exportDpi);
+      if (!Number.isFinite(longestSidePx) || longestSidePx < 1) {
         throw new Error("Export size and DPI must produce a valid image");
       }
-      if (exportPx > MAX_EXPORT_PX) {
-        throw new Error(`Export is ${exportPx}px. Keep the longest side at ${MAX_EXPORT_PX}px or less.`);
+      if (longestSidePx > MAX_EXPORT_PX) {
+        throw new Error(`Export is ${longestSidePx}px on the longest side. Keep the longest side at ${MAX_EXPORT_PX}px or less.`);
       }
 
       controls?.update();
-      const renderScale = Math.max(1, Math.min(EXPORT_SUPERSAMPLE, Math.floor(MAX_EXPORT_PX / exportPx)));
-      const renderPx = exportPx * renderScale;
+      const viewWidth = mount.clientWidth || 520;
+      const viewHeight = mount.clientHeight || 520;
+      const aspect = viewWidth / viewHeight || 1;
+      const exportWidthPx = aspect >= 1 ? longestSidePx : Math.max(1, Math.round(longestSidePx * aspect));
+      const exportHeightPx = aspect >= 1 ? Math.max(1, Math.round(longestSidePx / aspect)) : longestSidePx;
+      const renderScale = Math.max(1, Math.min(
+        EXPORT_SUPERSAMPLE,
+        Math.floor(MAX_EXPORT_PX / Math.max(exportWidthPx, exportHeightPx)),
+      ));
+      const renderWidthPx = exportWidthPx * renderScale;
+      const renderHeightPx = exportHeightPx * renderScale;
 
       exportRenderer = new THREE.WebGLRenderer({
         antialias: true,
@@ -456,24 +461,23 @@ function Home() {
         preserveDrawingBuffer: true,
       });
       exportRenderer.setPixelRatio(1);
-      exportRenderer.setSize(renderPx, renderPx, false);
+      exportRenderer.setSize(renderWidthPx, renderHeightPx, false);
       exportRenderer.setClearColor(0xffffff, 1);
       exportRenderer.outputColorSpace = THREE.SRGBColorSpace;
 
       const exportCamera = camera.clone() as THREE.PerspectiveCamera;
-      exportCamera.aspect = 1;
       exportCamera.updateProjectionMatrix();
       if (linMatRef.current) {
         previousLineWidth = linMatRef.current.linewidth;
         linMatRef.current.linewidth = linePx * renderScale;
-        linMatRef.current.resolution.set(renderPx, renderPx);
+        linMatRef.current.resolution.set(renderWidthPx, renderHeightPx);
       }
       exportRenderer.render(scene, exportCamera);
 
       const blob = await new Promise<Blob>((resolve, reject) => {
         const canvas = document.createElement("canvas");
-        canvas.width = exportPx;
-        canvas.height = exportPx;
+        canvas.width = exportWidthPx;
+        canvas.height = exportHeightPx;
         const ctx = canvas.getContext("2d");
         if (!ctx || !exportRenderer) {
           reject(new Error("Could not prepare JPG canvas"));
@@ -481,7 +485,7 @@ function Home() {
         }
         ctx.imageSmoothingEnabled = true;
         ctx.imageSmoothingQuality = "high";
-        ctx.drawImage(exportRenderer.domElement, 0, 0, exportPx, exportPx);
+        ctx.drawImage(exportRenderer.domElement, 0, 0, exportWidthPx, exportHeightPx);
         canvas.toBlob(
           (nextBlob) => {
             if (nextBlob) {
@@ -507,7 +511,6 @@ function Home() {
       setErrorMsg(String(err instanceof Error ? err.message : err));
       setStatus("viewing");
     } finally {
-      const mount = mountRef.current;
       if (linMatRef.current && previousLineWidth !== null) {
         linMatRef.current.linewidth = previousLineWidth;
       }
@@ -542,19 +545,21 @@ function Home() {
   if (status === 'idle') {
     return (
       <div
-        className="h-full flex flex-col items-center justify-center gap-4"
+        className="min-h-screen flex flex-col items-center justify-center gap-4 px-4"
         style={{ background: '#f0ece5', fontFamily: "'IBM Plex Mono', monospace" }}
         onDrop={onDrop}
         onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
         onDragLeave={() => setDragging(false)}
       >
-        <div
+        <button
+          type="button"
           onClick={() => inputRef.current?.click()}
           className={[
             'flex flex-col items-center justify-center gap-4 cursor-pointer rounded-lg border-2 border-dashed transition-colors',
             dragging ? 'border-[#1c1814] bg-[#e6e1d8]' : 'border-[#cec8be] hover:border-[#aca49a]',
           ].join(' ')}
-          style={{ width: 340, height: 240 }}
+          style={{ width: 'min(340px, 100%)', height: 240 }}
+          aria-label="Upload STEP file"
         >
           <svg className="w-12 h-12 text-[#aca49a]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.2}
@@ -564,7 +569,7 @@ function Home() {
             <div className="text-[13px] text-[#1c1814]">Drop .step / .stp here</div>
             <div className="text-[11px] text-[#7a7060] mt-1">or click to browse</div>
           </div>
-        </div>
+        </button>
         {errorMsg && <p className="text-[11px] text-red-500">{errorMsg}</p>}
         <input
           ref={inputRef}
@@ -578,8 +583,8 @@ function Home() {
   }
 
   return (
-    <div className="h-full flex flex-col overflow-hidden" style={{ background: '#f0ece5' }}>
-    <div className="flex-1 flex flex-col min-h-0 max-w-[1440px] w-full mx-auto overflow-hidden">
+    <div className="min-h-screen xl:h-full flex flex-col xl:overflow-hidden" style={{ background: '#f0ece5' }}>
+    <div className="flex-1 flex flex-col min-h-0 max-w-[1440px] w-full mx-auto xl:overflow-hidden">
       {/* ── Top bar ── */}
       <TopBar
         activeTab={rightTab}
@@ -588,7 +593,7 @@ function Home() {
       />
 
       {/* ── Body: left panel + right panel ── */}
-      <div className="flex flex-1 min-h-0 overflow-hidden">
+      <div className="flex flex-1 min-h-0 flex-col xl:flex-row xl:overflow-hidden">
         {/* Left: 3D viewer + controls */}
         <LeftPanel
           mountRef={mountRef}
@@ -613,7 +618,7 @@ function Home() {
         />
 
         {/* Right: tabbed content */}
-        <div className="flex-1 min-w-0 overflow-hidden flex flex-col">
+        <div className="flex-1 min-w-0 min-h-[420px] xl:min-h-0 overflow-hidden flex flex-col">
           {rightTab === 'MLB' && (
             <div className="h-full overflow-y-auto p-4" style={{ background: '#f8f5f0' }}>
               <MlbSection rows={mlbRows} onRowsChange={setMlbRows} moq={moq} onMoqChange={setMoq} />

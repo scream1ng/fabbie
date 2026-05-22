@@ -60,11 +60,12 @@ async def full_process(file: UploadFile = File(...)):
         
         # 1. Regex-based analysis (fast, works without OCC)
         try:
-            analysis = analyse_part(tmp_path)
+            analysis = analyse_part(tmp_path, filename=file.filename)
             result["analysis"] = analysis
             result["is_assembly"] = analysis.get("is_assembly", False)
             result["component_count"] = analysis.get("component_count", 0)
             result["components"] = analysis.get("components", [])
+            result["warnings"] = analysis.get("warnings", [])
         except Exception as e:
             result["analysis_error"] = str(e)
             
@@ -198,7 +199,7 @@ async def analyse(file: UploadFile = File(...)):
         raise HTTPException(400, "Empty file")
     tmp_path = _save_upload(data)
     try:
-        result = analyse_part(tmp_path)
+        result = analyse_part(tmp_path, filename=file.filename)
     except ValueError as e:
         raise HTTPException(422, str(e))
     except Exception as e:

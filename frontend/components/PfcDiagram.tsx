@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useRef, useId } from 'react';
+import React, { useEffect, useId, useRef, useState } from 'react';
 import type { BomRow } from './MlbSection';
 import { buildMermaidFromMlb } from '../app/bom';
 
@@ -14,12 +14,14 @@ export default function PfcDiagram({ rows }: PfcDiagramProps) {
   const rawId = useId();
   const stableId = rawId.replace(/:/g, '');
   const definition = buildMermaidFromMlb(rows);
+  const [renderError, setRenderError] = useState<string | null>(null);
 
   useEffect(() => {
     const el = containerRef.current;
     if (!el || !definition) return;
 
     let cancelled = false;
+    setRenderError(null);
 
     import('mermaid').then(({ default: mermaid }) => {
       if (cancelled) return;
@@ -48,8 +50,8 @@ export default function PfcDiagram({ rows }: PfcDiagramProps) {
         .render(diagId, definition)
         .then(({ svg }) => {
           if (!cancelled && containerRef.current) {
+            setRenderError(null);
             containerRef.current.innerHTML = svg;
-            // make SVG responsive
             const svgEl = containerRef.current.querySelector('svg');
             if (svgEl) {
               svgEl.removeAttribute('width');
@@ -57,7 +59,6 @@ export default function PfcDiagram({ rows }: PfcDiagramProps) {
               svgEl.setAttribute('preserveAspectRatio', 'xMidYMid meet');
               svgEl.style.width = '100%';
               svgEl.style.height = '100%';
-              // force small font — themeVariables fontSize doesn't reach foreignObject labels
               const styleEl = document.createElementNS('http://www.w3.org/2000/svg', 'style');
               styleEl.textContent = `
                 .nodeLabel, .nodeLabel p, .nodeLabel div,
@@ -76,8 +77,11 @@ export default function PfcDiagram({ rows }: PfcDiagramProps) {
           }
         })
         .catch((err) => {
-          if (!cancelled && containerRef.current) {
-            containerRef.current.innerHTML = `<pre class="text-xs text-red-400 whitespace-pre-wrap">${String(err)}\n\n${definition}</pre>`;
+          if (!cancelled) {
+            setRenderError(String(err));
+            if (containerRef.current) {
+              containerRef.current.innerHTML = '';
+            }
           }
         });
     });
@@ -88,6 +92,13 @@ export default function PfcDiagram({ rows }: PfcDiagramProps) {
   }, [definition, stableId]);
 
   if (!definition) return null;
+  if (renderError) {
+    return (
+      <div className="flex-1 min-h-0 w-full overflow-auto">
+        <pre className="text-xs text-red-400 whitespace-pre-wrap">{renderError}{'\n\n'}{definition}</pre>
+      </div>
+    );
+  }
 
   return (
     <div
