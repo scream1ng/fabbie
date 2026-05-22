@@ -160,7 +160,7 @@ export function buildMermaidFlow(nodes: BomFlowNode[]) {
 
 // ── MLB-based Mermaid generator ───────────────────────────────────────────────
 // Accepts the flat BomRow array from MlbSection. Edges: child (high lvl) → parent (low lvl).
-// Shapes: rect for RAW / FG / component-header (proc=''), rounded for process ops.
+// Shapes: rounded for all nodes to keep one consistent visual language.
 
 interface _MlbRow {
   p: string;
@@ -194,8 +194,7 @@ export function buildMermaidFromMlb(rows: _MlbRow[]): string {
     const top = esc(row.p || '');
     const bot = esc(row.d || '');
     const label = labelHtml(top, bot);
-    const rect = row.proc === "RAW" || row.proc === "FG" || row.proc === "";
-    return rect ? `${nid(i)}["${label}"]` : `${nid(i)}("${label}")`;
+    return `${nid(i)}("${label}")`;
   };
 
   // nearest preceding row whose lvl === current.lvl - 1

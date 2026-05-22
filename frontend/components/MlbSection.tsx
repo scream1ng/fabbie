@@ -221,7 +221,7 @@ function Dash() {
 function MaterialQtyCell({ row, onChange }: { row: BomRow; onChange: (row: BomRow) => void }) {
   const mode = row.qty_type ?? 'use';
   return (
-    <div className="relative flex items-center h-full overflow-visible">
+    <div className="flex items-center justify-end gap-1.5 h-full overflow-visible pr-1">
       <div className="w-full">
         <NumCell
           value={Number(row.qty) || 1}
@@ -231,7 +231,7 @@ function MaterialQtyCell({ row, onChange }: { row: BomRow; onChange: (row: BomRo
       <button
         type="button"
         onClick={() => onChange({ ...row, qty_type: mode === 'use' ? 'amortise' : 'use' })}
-        className="absolute -right-3 top-1/2 -translate-y-1/2 text-[10px] font-mono font-semibold cursor-pointer select-none w-5 h-5 rounded-full border border-[#cec8be] bg-white text-center leading-[18px] shadow-sm"
+        className="flex h-full min-w-[10px] items-center justify-center text-[11px] font-mono font-semibold cursor-pointer select-none leading-none"
         style={{ color: mode === 'use' ? '#1c1814' : '#a86010' }}
         aria-label={mode === 'use' ? 'Switch material quantity mode to amortise' : 'Switch material quantity mode to use'}
         title={mode === 'use' ? 'qty × unit cost — click to toggle' : 'unit cost ÷ qty — click to toggle'}

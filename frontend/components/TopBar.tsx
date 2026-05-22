@@ -18,15 +18,17 @@ export default function TopBar({
   onNew,
 }: TopBarProps) {
   return (
-    <div className="h-[38px] flex-shrink-0 flex items-stretch bg-[#f8f5f0] border-b border-[#cec8be]">
+    <div className="h-[40px] flex-shrink-0 flex items-stretch bg-[#f8f5f0] border-b border-[#cec8be]">
       {/* Logo */}
-      <div className="px-4 flex-shrink-0 flex items-center gap-3 border-r border-[#cec8be]">
-        <span className="font-['Caveat',cursive] text-[22px] font-bold leading-none tracking-tight select-none text-[#1c1814]">
-          fabbie
-        </span>
-        <span className="hidden sm:block text-[9px] font-mono uppercase tracking-wider text-[#7a7060] select-none">
-          STEP Reading Program
-        </span>
+      <div className="px-4 flex-shrink-0 flex items-center border-r border-[#cec8be]">
+        <div className="flex items-baseline gap-2.5 whitespace-nowrap">
+          <span className="font-['Caveat',cursive] text-[22px] font-bold leading-none tracking-tight select-none text-[#1c1814]">
+            fabbie
+          </span>
+          <span className="hidden sm:block text-[9px] font-mono uppercase tracking-[0.18em] text-[#7a7060] select-none leading-none">
+            STEP Reading Program
+          </span>
+        </div>
       </div>
 
       {/* Spacer */}

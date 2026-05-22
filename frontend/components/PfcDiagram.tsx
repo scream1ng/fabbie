@@ -29,7 +29,7 @@ export default function PfcDiagram({ rows }: PfcDiagramProps) {
         startOnLoad: false,
         theme: 'base',
         flowchart: {
-          curve: 'stepBefore',
+          curve: 'stepAfter',
           htmlLabels: true,
           nodeSpacing: 30,
           rankSpacing: 42,
@@ -81,6 +81,11 @@ export default function PfcDiagram({ rows }: PfcDiagramProps) {
                 }
                 .flowchart-link {
                   stroke-linecap: square !important;
+                  stroke-linejoin: miter !important;
+                }
+                .arrowheadPath {
+                  fill: #aca49a !important;
+                  stroke: #aca49a !important;
                 }
               `;
               svgEl.insertBefore(styleEl, svgEl.firstChild);
