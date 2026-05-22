@@ -15,8 +15,8 @@ interface MlbSectionProps {
   onMoqChange?: (n: number) => void;
 }
 
-const COLS = '72px 150px 60px 1fr 48px 68px 62px 64px';
-const TABLE_MIN_WIDTH = '660px';
+const COLS = '72px 190px 60px minmax(220px,1fr) 48px 68px 62px 64px';
+const TABLE_MIN_WIDTH = '720px';
 
 // Auto-fill when user sets proc to a known value.
 // Explicit undefined clears conflicting fields when switching type.
@@ -218,6 +218,30 @@ function Dash() {
   );
 }
 
+function MaterialQtyCell({ row, onChange }: { row: BomRow; onChange: (row: BomRow) => void }) {
+  const mode = row.qty_type ?? 'use';
+  return (
+    <div className="relative flex items-center h-full overflow-visible">
+      <div className="w-full">
+        <NumCell
+          value={Number(row.qty) || 1}
+          onChange={v => onChange({ ...row, qty: String(Math.max(1, v ?? 1)) })}
+        />
+      </div>
+      <button
+        type="button"
+        onClick={() => onChange({ ...row, qty_type: mode === 'use' ? 'amortise' : 'use' })}
+        className="absolute -right-3 top-1/2 -translate-y-1/2 text-[10px] font-mono font-semibold cursor-pointer select-none w-5 h-5 rounded-full border border-[#cec8be] bg-white text-center leading-[18px] shadow-sm"
+        style={{ color: mode === 'use' ? '#1c1814' : '#a86010' }}
+        aria-label={mode === 'use' ? 'Switch material quantity mode to amortise' : 'Switch material quantity mode to use'}
+        title={mode === 'use' ? 'qty × unit cost — click to toggle' : 'unit cost ÷ qty — click to toggle'}
+      >
+        {mode === 'use' ? '×' : '÷'}
+      </button>
+    </div>
+  );
+}
+
 interface RowProps {
   row: BomRow; idx: number; rows: BomRow[]; moq: number;
   onChange: (row: BomRow) => void;
@@ -294,20 +318,7 @@ function BomRowEl({ row, idx, rows, moq, onChange, onChangeLevel, onDelete, onAd
       {t === 'process' ? (
         <NumCell value={row.pcs_per_hour} onChange={v => onChange({ ...row, pcs_per_hour: v })} />
       ) : t === 'material' ? (
-        <div className="flex items-center justify-end gap-0.5 px-1 h-full">
-          <NumCell
-            value={Number(row.qty) || 1}
-            onChange={v => onChange({ ...row, qty: String(Math.max(1, v ?? 1)) })}
-          />
-          <button
-            type="button"
-            onClick={() => onChange({ ...row, qty_type: (row.qty_type ?? 'use') === 'use' ? 'amortise' : 'use' })}
-            className="text-[11px] font-mono font-semibold cursor-pointer select-none w-3 text-center flex-shrink-0"
-            style={{ color: (row.qty_type ?? 'use') === 'use' ? '#1c1814' : '#a86010' }}
-            aria-label={(row.qty_type ?? 'use') === 'use' ? 'Switch material quantity mode to amortise' : 'Switch material quantity mode to use'}
-            title={(row.qty_type ?? 'use') === 'use' ? 'qty × unit cost — click to toggle' : 'unit cost ÷ qty — click to toggle'}
-          >{(row.qty_type ?? 'use') === 'use' ? '×' : '÷'}</button>
-        </div>
+        <MaterialQtyCell row={row} onChange={onChange} />
       ) : <Dash />}
 
       {/* Rate / $ Unit */}

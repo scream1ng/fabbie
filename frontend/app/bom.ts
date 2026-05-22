@@ -169,6 +169,19 @@ interface _MlbRow {
   lvl: number;
 }
 
+const PFC_NODE_W = 232;
+const PFC_NODE_H = 60;
+
+function labelHtml(top: string, bot: string) {
+  return (
+    `<div style='width:${PFC_NODE_W}px;height:${PFC_NODE_H}px;padding:7px 10px;box-sizing:border-box;` +
+    `display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;overflow:hidden;'>` +
+    `<div style='width:100%;font-weight:600;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;'>${top}</div>` +
+    `<div style='width:100%;margin-top:2px;line-height:1.2;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;'>${bot}</div>` +
+    `</div>`
+  );
+}
+
 export function buildMermaidFromMlb(rows: _MlbRow[]): string {
   if (rows.length === 0) return "";
 
@@ -180,7 +193,7 @@ export function buildMermaidFromMlb(rows: _MlbRow[]): string {
   const decl = (row: _MlbRow, i: number): string => {
     const top = esc(row.p || '');
     const bot = esc(row.d || '');
-    const label = top && bot ? `${top}<br/>${bot}` : top || bot;
+    const label = labelHtml(top, bot);
     const rect = row.proc === "RAW" || row.proc === "FG" || row.proc === "";
     return rect ? `${nid(i)}["${label}"]` : `${nid(i)}("${label}")`;
   };

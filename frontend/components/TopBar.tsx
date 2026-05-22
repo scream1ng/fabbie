@@ -20,9 +20,12 @@ export default function TopBar({
   return (
     <div className="h-[38px] flex-shrink-0 flex items-stretch bg-[#f8f5f0] border-b border-[#cec8be]">
       {/* Logo */}
-      <div className="px-4 flex-shrink-0 flex items-center border-r border-[#cec8be]">
-        <span className="font-['Caveat',cursive] text-[22px] font-bold leading-none tracking-tight select-none">
-          <span style={{ color: '#1c1814' }}>fab</span><span style={{ color: '#7a7060' }}>bie</span>
+      <div className="px-4 flex-shrink-0 flex items-center gap-3 border-r border-[#cec8be]">
+        <span className="font-['Caveat',cursive] text-[22px] font-bold leading-none tracking-tight select-none text-[#1c1814]">
+          fabbie
+        </span>
+        <span className="hidden sm:block text-[9px] font-mono uppercase tracking-wider text-[#7a7060] select-none">
+          STEP Reading Program
         </span>
       </div>
 

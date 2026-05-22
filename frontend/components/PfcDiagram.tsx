@@ -28,6 +28,14 @@ export default function PfcDiagram({ rows }: PfcDiagramProps) {
       mermaid.initialize({
         startOnLoad: false,
         theme: 'base',
+        flowchart: {
+          curve: 'stepBefore',
+          htmlLabels: true,
+          nodeSpacing: 30,
+          rankSpacing: 42,
+          padding: 12,
+          useMaxWidth: false,
+        },
         themeVariables: {
           primaryColor: '#ffffff',
           primaryTextColor: '#1c1814',
@@ -64,12 +72,15 @@ export default function PfcDiagram({ rows }: PfcDiagramProps) {
                 .nodeLabel, .nodeLabel p, .nodeLabel div,
                 .label, .label p, .label div,
                 foreignObject div, foreignObject p, foreignObject span {
-                  font-size: 11px !important;
+                  font-size: 10px !important;
                   font-family: 'IBM Plex Mono', monospace !important;
-                  line-height: 1.4 !important;
+                  line-height: 1.2 !important;
                   text-align: center !important;
                   display: block !important;
                   width: 100% !important;
+                }
+                .flowchart-link {
+                  stroke-linecap: square !important;
                 }
               `;
               svgEl.insertBefore(styleEl, svgEl.firstChild);
